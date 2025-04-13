@@ -408,6 +408,12 @@ const LanceDb = {
           }
           // ---
 
+          // --- Log metadata before push ---
+          console.log(`[DEBUG] LanceDB Preparing submission for chunk ${i + 1}`);
+          console.log("[DEBUG] LanceDB chunkText:", JSON.stringify(chunkText.substring(0, 100) + '...')); // Log preview
+          console.log("[DEBUG] LanceDB otherMetadata:", JSON.stringify(otherMetadata));
+          // --- End Log ---
+
           submissions.push({
             id: vectorRecord.id,
             vector: vectorRecord.values,

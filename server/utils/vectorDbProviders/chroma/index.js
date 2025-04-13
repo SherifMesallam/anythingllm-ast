@@ -324,6 +324,11 @@ const Chroma = {
           }
           // -------------------------------------------------
 
+          // --- Log metadata before push ---
+          console.log(`[DEBUG] ChromaDB Preparing submission for chunk ${i + 1}`);
+          console.log("[DEBUG] ChromaDB sanitizedMetadata:", JSON.stringify(sanitizedMetadata));
+          // --- End Log ---
+
           // Prepare submission for Chroma Add
           submission.ids.push(vectorId);
           submission.embeddings.push(vector);
