@@ -31,8 +31,6 @@ async function asTxt({ fullFilePath = "", filename = "" }) {
     id: v4(),
     url: "file://" + fullFilePath,
     title: filename,
-    docAuthor: "Unknown", // TODO: Find a better author
-    description: "Unknown", // TODO: Find a better description
     docSource: "a text file uploaded by the user.",
     chunkSource: "",
     published: createdDate(fullFilePath),

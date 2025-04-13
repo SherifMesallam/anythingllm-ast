@@ -316,11 +316,10 @@ const LanceDb = {
       // because we then cannot atomically control our namespace to granularly find/remove documents
       // from vectordb.
       const EmbedderEngine = getEmbeddingEngineSelection();
-      const textSplitter = new TextSplitter({
+
+      const splitterOptions = {
         chunkSize: TextSplitter.determineMaxChunkSize(
-          await SystemSettings.getValueOrFallback({
-            label: "text_splitter_chunk_size",
-          }),
+          await SystemSettings.getValueOrFallback({ label: "text_splitter_chunk_size" }),
           EmbedderEngine?.embeddingMaxChunkLength
         ),
         chunkOverlap: await SystemSettings.getValueOrFallback(
@@ -328,55 +327,129 @@ const LanceDb = {
           20
         ),
         chunkHeaderMeta: TextSplitter.buildHeaderMeta(metadata),
-      });
-      const textChunks = await textSplitter.splitText(pageContent);
+        filename: metadata.title // Pass filename for potential language-specific splitting
+      };
+      console.log(`LanceDB:addDocumentToNamespace - Initializing TextSplitter with options: ${JSON.stringify(splitterOptions)}`);
 
-      console.log("Chunks created from document:", textChunks.length);
+      const textSplitter = new TextSplitter(splitterOptions);
+      console.log("LanceDB:addDocumentToNamespace - TextSplitter instance created.");
+
+      console.log("LanceDB:addDocumentToNamespace - Calling textSplitter.splitText...");
+      const chunksWithMetadata = await textSplitter.splitText(pageContent);
+      console.log(`LanceDB:addDocumentToNamespace - Document split into ${chunksWithMetadata.length} chunks.`);
+
+      console.log("Chunks created from document:", chunksWithMetadata.length);
+      if (chunksWithMetadata.length === 0) {
+         console.log("LanceDB:addDocumentToNamespace - No chunks generated, skipping embedding.");
+         return { vectorized: true, error: null }; // Or handle as appropriate
+      }
+
       const documentVectors = [];
       const vectors = [];
       const submissions = [];
-      const vectorValues = await EmbedderEngine.embedChunks(textChunks);
 
-      if (!!vectorValues && vectorValues.length > 0) {
+      // Extract just the text for embedding
+      const textChunksForEmbedding = chunksWithMetadata.map(chunkData => chunkData.text);
+      console.log(`LanceDB:addDocumentToNamespace - Embedding ${textChunksForEmbedding.length} text chunks...`);
+      const vectorValues = await EmbedderEngine.embedChunks(textChunksForEmbedding);
+
+      if (!!vectorValues && vectorValues.length === chunksWithMetadata.length) {
+        console.log(`LanceDB:addDocumentToNamespace - Successfully received ${vectorValues.length} vectors from embedder.`);
         for (const [i, vector] of vectorValues.entries()) {
           const vectorRecord = {
             id: uuidv4(),
             values: vector,
-            // [DO NOT REMOVE]
-            // LangChain will be unable to find your text if you embed manually and dont include the `text` key.
-            // https://github.com/hwchase17/langchainjs/blob/2def486af734c0ca87285a48f1a04c057ab74bdf/langchain/src/vectorstores/pinecone.ts#L64
-            metadata: { ...metadata, text: textChunks[i] },
           };
 
-          vectors.push(vectorRecord);
+          // Merge original document metadata with chunk-specific AST metadata
+          const combinedMetadata = {
+             ...metadata, // Original document metadata (title, published, etc.)
+             ...chunksWithMetadata[i].metadata, // AST metadata (sourceType, nodeType, etc.)
+             text: chunksWithMetadata[i].text, // Still include the text for LangChain compatibility
+          };
+
+          // Ensure metadata fields are suitable for LanceDB (e.g., no nested objects if not supported)
+          // Simple check for nested objects - adjust as needed for LanceDB limitations
+          for (const key in combinedMetadata) {
+             if (typeof combinedMetadata[key] === 'object' && combinedMetadata[key] !== null) {
+                console.log(`[WARN] LanceDB:addDocumentToNamespace - Converting metadata key ${key} to string as it was an object.`);
+                combinedMetadata[key] = JSON.stringify(combinedMetadata[key]);
+             } else if (Array.isArray(combinedMetadata[key])) {
+                console.log(`[WARN] LanceDB:addDocumentToNamespace - Converting array metadata key ${key} to string.`);
+                combinedMetadata[key] = JSON.stringify(combinedMetadata[key]); // Stringify arrays too
+             } else if (combinedMetadata[key] === null || combinedMetadata[key] === undefined) {
+                delete combinedMetadata[key]; // Remove null values if they cause issues
+             }
+          }
+
+          // --- Log combined metadata and text chunk --- 
+          console.log(`\n--- LanceDB: Processing Chunk ${i + 1}/${vectorValues.length} ---\n` +
+                   `Chunk Text Length: ${chunksWithMetadata[i].text.length}\n` +
+                   `Combined Metadata:\n${JSON.stringify(combinedMetadata, null, 2)}\n` +
+                   `Chunk Text Preview (first 100 chars):\n${chunksWithMetadata[i].text.substring(0, 100)}...\n` +
+                   `--- End Chunk Processing ---`);
+           // -------------------------------------------
+
+          vectors.push({
+              ...vectorRecord,
+              metadata: combinedMetadata // Keep separated for potential caching needs
+          });
+
+          // Separate text from other metadata for LanceDB submission
+          const { text: chunkText, ...otherMetadata } = combinedMetadata;
+
           submissions.push({
-            ...vectorRecord.metadata,
             id: vectorRecord.id,
             vector: vectorRecord.values,
+            text: chunkText, // Use original, non-truncated text for storage
+            ...otherMetadata // Spread the rest of the metadata
           });
           documentVectors.push({ docId, vectorId: vectorRecord.id });
         }
       } else {
-        throw new Error(
-          "Could not embed document chunks! This document will not be recorded."
-        );
+         const errorMsg = `Could not embed document chunks! Expected ${chunksWithMetadata.length} vectors, but received ${vectorValues?.length || 0}.`;
+         console.log(`[ERROR] LanceDB:addDocumentToNamespace - ${errorMsg}`);
+        throw new Error(errorMsg);
       }
 
       if (vectors.length > 0) {
         const chunks = [];
         for (const chunk of toChunks(vectors, 500)) chunks.push(chunk);
 
-        console.log("Inserting vectorized chunks into LanceDB collection.");
+        const BATCH_SIZE = 10; // Define an even smaller batch size for debugging
+        console.log(`LanceDB:addDocumentToNamespace - Submitting ${submissions.length} records to LanceDB in batches of ${BATCH_SIZE}...`);
         const { client } = await this.connect();
-        await this.updateOrCreateCollection(client, submissions, namespace);
+
+        for (const submissionBatch of toChunks(submissions, BATCH_SIZE)) {
+            try {
+                console.log(`LanceDB:addDocumentToNamespace - Writing batch of ${submissionBatch.length} records...`);
+                await this.updateOrCreateCollection(client, submissionBatch, namespace);
+                console.log(`LanceDB:addDocumentToNamespace - Batch written successfully.`);
+            } catch (batchError) {
+                console.error(`[ERROR] LanceDB: Failed to write batch! Batch Size: ${submissionBatch.length}`);
+                // Log the specific batch data that failed (might be large!)
+                console.error("[ERROR] LanceDB: Failing batch data:", JSON.stringify(submissionBatch, null, 2));
+                // Re-throw the original error to be caught by the outer try/catch
+                throw batchError;
+            }
+        }
+
+        // Caching should happen after successful DB writes
         await storeVectorResult(chunks, fullFilePath);
       }
 
-      await DocumentVectors.bulkInsert(documentVectors);
+      // Bulk insert associations after all DB batches are done
+      if (documentVectors.length > 0) {
+        console.log(`LanceDB:addDocumentToNamespace - Storing ${documentVectors.length} document vector associations.`);
+        await DocumentVectors.bulkInsert(documentVectors);
+      }
+
       return { vectorized: true, error: null };
     } catch (e) {
-      console.error("addDocumentToNamespace", e.message);
-      return { vectorized: false, error: e.message };
+      console.error("addDocumentToNamespace Error:", e.stack || e); // Log stack trace
+      // Ensure error message is a string
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      return { vectorized: false, error: errorMsg };
     }
   },
   performSimilaritySearch: async function ({

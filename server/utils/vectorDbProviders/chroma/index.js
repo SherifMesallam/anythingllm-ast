@@ -252,43 +252,94 @@ const Chroma = {
           20
         ),
         chunkHeaderMeta: TextSplitter.buildHeaderMeta(metadata),
+        filename: metadata.title
       });
-      const textChunks = await textSplitter.splitText(pageContent);
 
-      console.log("Chunks created from document:", textChunks.length);
+      // Now receives an array of { text: string, metadata: object }
+      const chunksWithMetadata = await textSplitter.splitText(pageContent);
+
+      console.log(`ChromaDB:addDocumentToNamespace - Document split into ${chunksWithMetadata.length} chunks.`);
+      if (chunksWithMetadata.length === 0) {
+         console.log("ChromaDB:addDocumentToNamespace - No chunks generated, skipping embedding.");
+         return { vectorized: true, error: null };
+      }
+
       const documentVectors = [];
       const vectors = [];
-      const vectorValues = await EmbedderEngine.embedChunks(textChunks);
+
+      // Extract just the text for embedding
+      const textChunksForEmbedding = chunksWithMetadata.map(chunkData => chunkData.text);
+      console.log(`ChromaDB:addDocumentToNamespace - Embedding ${textChunksForEmbedding.length} text chunks...`);
+      const vectorValues = await EmbedderEngine.embedChunks(textChunksForEmbedding);
+
       const submission = {
         ids: [],
         embeddings: [],
         metadatas: [],
-        documents: [],
+        documents: [], // Chroma uses this field specifically for the text content
       };
 
-      if (!!vectorValues && vectorValues.length > 0) {
+      if (!!vectorValues && vectorValues.length === chunksWithMetadata.length) {
+        console.log(`ChromaDB:addDocumentToNamespace - Successfully received ${vectorValues.length} vectors from embedder.`);
         for (const [i, vector] of vectorValues.entries()) {
-          const vectorRecord = {
-            id: uuidv4(),
-            values: vector,
-            // [DO NOT REMOVE]
-            // LangChain will be unable to find your text if you embed manually and dont include the `text` key.
-            // https://github.com/hwchase17/langchainjs/blob/2def486af734c0ca87285a48f1a04c057ab74bdf/langchain/src/vectorstores/pinecone.ts#L64
-            metadata: { ...metadata, text: textChunks[i] },
+          // Generate ID for this chunk
+          const vectorId = uuidv4();
+
+          // Merge original document metadata with chunk-specific AST metadata
+          // Exclude the raw text chunk itself from the metadata payload for Chroma
+          const { text: _t, ...astMetadata } = chunksWithMetadata[i].metadata;
+          const combinedMetadata = {
+             ...metadata, // Original document metadata (title, published, etc.) - might contain non-primitives initially
+             ...astMetadata, // AST metadata (sourceType, nodeType, etc.)
           };
 
-          submission.ids.push(vectorRecord.id);
-          submission.embeddings.push(vectorRecord.values);
-          submission.metadatas.push(metadata);
-          submission.documents.push(textChunks[i]);
+          // --- Sanitize metadata specifically for Chroma --- 
+          const sanitizedMetadata = {};
+          for (const key in combinedMetadata) {
+            const value = combinedMetadata[key];
+            if (value === null || value === undefined) {
+              continue; // Skip null/undefined values
+            } else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+              sanitizedMetadata[key] = value; // Keep primitives
+            } else {
+              // Convert anything else (objects, arrays) to string
+              try {
+                 sanitizedMetadata[key] = JSON.stringify(value);
+                 console.log(`[WARN] ChromaDB: Stringified metadata key '${key}' for Chroma.`);
+              } catch (e) {
+                 console.log(`[WARN] ChromaDB: Could not stringify metadata key '${key}', skipping.`);
+              }
+            }
+          }
+          // -------------------------------------------------
 
-          vectors.push(vectorRecord);
-          documentVectors.push({ docId, vectorId: vectorRecord.id });
+          // Log combined metadata and text chunk (optional)
+          // console.log(`\n--- ChromaDB: Processing Chunk ${i + 1}/${vectorValues.length} ---\n` +
+          //                 `Chunk Text Length: ${chunksWithMetadata[i].text.length}\n` +
+          //                 `Combined Metadata:\n${JSON.stringify(combinedMetadata, null, 2)}\n` +
+          //                 `Chunk Text Preview (first 100 chars):\n${chunksWithMetadata[i].text.substring(0, 100)}...\n` +
+          //                 `--- End Chunk Processing ---`);
+
+          // Prepare submission for Chroma Add
+          submission.ids.push(vectorId);
+          submission.embeddings.push(vector);
+          submission.metadatas.push(sanitizedMetadata); // Use sanitized metadata
+          submission.documents.push(chunksWithMetadata[i].text); // Use original text for Chroma's document field
+
+          // Prepare data for cache (needs text in metadata)
+          vectors.push({
+            id: vectorId,
+            values: vector,
+            metadata: { ...sanitizedMetadata, text: chunksWithMetadata[i].text }
+          });
+
+          // Prepare data for internal document vector mapping
+          documentVectors.push({ docId, vectorId: vectorId });
         }
       } else {
-        throw new Error(
-          "Could not embed document chunks! This document will not be recorded."
-        );
+        const errorMsg = `Could not embed document chunks! Expected ${chunksWithMetadata.length} vectors, but received ${vectorValues?.length || 0}.`;
+        console.error(`[ERROR] ChromaDB:addDocumentToNamespace - ${errorMsg}`);
+        throw new Error(errorMsg);
       }
 
       const { client } = await this.connect();
@@ -301,6 +352,9 @@ const Chroma = {
         const chunks = [];
         console.log("Inserting vectorized chunks into Chroma collection.");
         for (const chunk of toChunks(vectors, 500)) chunks.push(chunk);
+
+        // Log the final submission object payload right before sending
+        // console.log("[DEBUG] ChromaDB submission payload:", JSON.stringify(submission, null, 2));
 
         try {
           await collection.add(submission);
