@@ -222,10 +222,12 @@ const LanceDb = {
     const hasNamespace = await this.hasNamespace(namespace);
     if (hasNamespace) {
       const collection = await client.openTable(namespace);
+      console.log(`[DEBUG] LanceDB updateOrCreateCollection: Calling collection.add for namespace '${namespace}' with ${data.length} records.`);
       await collection.add(data);
       return true;
     }
 
+    console.log(`[DEBUG] LanceDB updateOrCreateCollection: Calling client.createTable for namespace '${namespace}' with ${data.length} records.`);
     await client.createTable(namespace, data);
     return true;
   },
@@ -397,6 +399,14 @@ const LanceDb = {
 
           // Separate text from other metadata for LanceDB submission
           const { text: chunkText, ...otherMetadata } = combinedMetadata;
+
+          // ---
+          // Skip chunks with empty text, as LanceDB errors on this.
+          if (!chunkText || chunkText.trim().length === 0) {
+            console.log(`[WARN] LanceDB: Skipping chunk ${i + 1}/${vectorValues.length} due to empty text content.`);
+            continue; // Skip to the next vector
+          }
+          // ---
 
           submissions.push({
             id: vectorRecord.id,

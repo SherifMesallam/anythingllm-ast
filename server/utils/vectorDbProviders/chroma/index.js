@@ -282,7 +282,17 @@ const Chroma = {
       if (!!vectorValues && vectorValues.length === chunksWithMetadata.length) {
         console.log(`ChromaDB:addDocumentToNamespace - Successfully received ${vectorValues.length} vectors from embedder.`);
         for (const [i, vector] of vectorValues.entries()) {
-          // Generate ID for this chunk
+          // Get the text content for the check FIRST
+          const currentText = chunksWithMetadata[i].text;
+
+          // --- Skip chunks with empty text ---
+          if (!currentText || currentText.trim().length === 0) {
+            console.log(`[WARN] ChromaDB: Skipping chunk ${i + 1}/${vectorValues.length} due to empty text content.`);
+            continue; // Skip this iteration entirely
+          }
+          // --- End Check ---
+
+          // If text is NOT empty, proceed with adding data
           const vectorId = uuidv4();
 
           // Merge original document metadata with chunk-specific AST metadata
@@ -293,7 +303,7 @@ const Chroma = {
              ...astMetadata, // AST metadata (sourceType, nodeType, etc.)
           };
 
-          // --- Sanitize metadata specifically for Chroma --- 
+          // --- Sanitize metadata specifically for Chroma ---
           const sanitizedMetadata = {};
           for (const key in combinedMetadata) {
             const value = combinedMetadata[key];
@@ -305,7 +315,8 @@ const Chroma = {
               // Convert anything else (objects, arrays) to string
               try {
                  sanitizedMetadata[key] = JSON.stringify(value);
-                 console.log(`[WARN] ChromaDB: Stringified metadata key '${key}' for Chroma.`);
+                 // Optional: Keep warning for stringification
+                 // console.log(`[WARN] ChromaDB: Stringified metadata key '${key}' for Chroma.`);
               } catch (e) {
                  console.log(`[WARN] ChromaDB: Could not stringify metadata key '${key}', skipping.`);
               }
@@ -313,24 +324,17 @@ const Chroma = {
           }
           // -------------------------------------------------
 
-          // Log combined metadata and text chunk (optional)
-          // console.log(`\n--- ChromaDB: Processing Chunk ${i + 1}/${vectorValues.length} ---\n` +
-          //                 `Chunk Text Length: ${chunksWithMetadata[i].text.length}\n` +
-          //                 `Combined Metadata:\n${JSON.stringify(combinedMetadata, null, 2)}\n` +
-          //                 `Chunk Text Preview (first 100 chars):\n${chunksWithMetadata[i].text.substring(0, 100)}...\n` +
-          //                 `--- End Chunk Processing ---`);
-
           // Prepare submission for Chroma Add
           submission.ids.push(vectorId);
           submission.embeddings.push(vector);
           submission.metadatas.push(sanitizedMetadata); // Use sanitized metadata
-          submission.documents.push(chunksWithMetadata[i].text); // Use original text for Chroma's document field
+          submission.documents.push(currentText); // Use the validated text for Chroma's document field
 
           // Prepare data for cache (needs text in metadata)
           vectors.push({
             id: vectorId,
             values: vector,
-            metadata: { ...sanitizedMetadata, text: chunksWithMetadata[i].text }
+            metadata: { ...sanitizedMetadata, text: currentText } // Use validated text
           });
 
           // Prepare data for internal document vector mapping
