@@ -349,29 +349,48 @@ const Chroma = {
       });
 
       if (vectors.length > 0) {
-        const chunks = [];
-        console.log("Inserting vectorized chunks into Chroma collection.");
-        for (const chunk of toChunks(vectors, 500)) chunks.push(chunk);
+        // Batch the submissions for ChromaDB add operation
+        const BATCH_SIZE = 10; // Adjust batch size as needed (start smaller)
+        console.log(`ChromaDB:addDocumentToNamespace - Submitting ${submission.ids.length} records to ChromaDB in batches of ${BATCH_SIZE}...`);
 
-        // Log the final submission object payload right before sending
-        // console.log("[DEBUG] ChromaDB submission payload:", JSON.stringify(submission, null, 2));
+        for (let i = 0; i < submission.ids.length; i += BATCH_SIZE) {
+          const batchIds = submission.ids.slice(i, i + BATCH_SIZE);
+          const batchEmbeddings = submission.embeddings.slice(i, i + BATCH_SIZE);
+          const batchMetadatas = submission.metadatas.slice(i, i + BATCH_SIZE);
+          const batchDocuments = submission.documents.slice(i, i + BATCH_SIZE);
 
-        try {
-          await collection.add(submission);
-          console.log(
-            `Successfully added ${submission.ids.length} vectors to collection ${this.normalize(namespace)}`
-          );
-        } catch (error) {
-          console.error("Error adding to ChromaDB:", error);
-          throw new Error(`Error embedding into ChromaDB: ${error.message}`);
+          const batchPayload = {
+            ids: batchIds,
+            embeddings: batchEmbeddings,
+            metadatas: batchMetadatas,
+            documents: batchDocuments,
+          };
+
+          try {
+            console.log(`ChromaDB:addDocumentToNamespace - Writing batch of ${batchIds.length} records...`);
+            // Log the payload right before sending (optional, can be very verbose)
+            // console.log("[DEBUG] ChromaDB batch payload:", JSON.stringify(batchPayload, null, 2));
+            const additionResult = await collection.add(batchPayload);
+            if (!additionResult) throw new Error("Collection.add returned unsuccessful status.");
+            console.log(`ChromaDB:addDocumentToNamespace - Batch written successfully.`);
+          } catch (error) {
+            console.error(`[ERROR] ChromaDB: Failed to write batch! Batch Size: ${batchIds.length}`);
+            // Log the specific batch data that failed (might be large!)
+            // console.error("[ERROR] ChromaDB: Failing batch data:", JSON.stringify(batchPayload, null, 2));
+            // Re-throw the original error to be caught by the outer try/catch
+            throw new Error(`Error embedding batch into ChromaDB: ${error.message}`);
+          }
         }
 
-        await storeVectorResult(chunks, fullFilePath);
+        // Caching logic (should use the original `vectors` array)
+        const chunksForCache = [];
+        for (const chunk of toChunks(vectors, 500)) chunksForCache.push(chunk);
+        await storeVectorResult(chunksForCache, fullFilePath);
       }
 
       await DocumentVectors.bulkInsert(documentVectors);
       return { vectorized: true, error: null };
-    } catch (e) {
+    } catch (e) { // Outer catch
       console.error("addDocumentToNamespace", e.message);
       return { vectorized: false, error: e.message };
     }
