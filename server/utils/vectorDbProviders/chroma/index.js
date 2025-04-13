@@ -368,10 +368,14 @@ const Chroma = {
 
           try {
             console.log(`ChromaDB:addDocumentToNamespace - Writing batch of ${batchIds.length} records...`);
+            // Log details of the batch before sending
+            console.log(`[DEBUG] ChromaDB Batch Metadata Keys: ${batchMetadatas.map(m => Object.keys(m).join(', ')).join(' | ')}`);
+            console.log(`[DEBUG] ChromaDB Batch Document Lengths: ${batchDocuments.map(d => d?.length ?? 0).join(', ')}`);
             // Log the payload right before sending (optional, can be very verbose)
             // console.log("[DEBUG] ChromaDB batch payload:", JSON.stringify(batchPayload, null, 2));
             const additionResult = await collection.add(batchPayload);
-            if (!additionResult) throw new Error("Collection.add returned unsuccessful status.");
+            console.log("[DEBUG] ChromaDB collection.add result:", additionResult); // Log the raw result
+            if (!additionResult) throw new Error("Collection.add returned unsuccessful status."); // Reinstate the check
             console.log(`ChromaDB:addDocumentToNamespace - Batch written successfully.`);
           } catch (error) {
             console.error(`[ERROR] ChromaDB: Failed to write batch! Batch Size: ${batchIds.length}`);
