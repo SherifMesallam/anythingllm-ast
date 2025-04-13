@@ -322,7 +322,12 @@ const Chroma = {
               }
             }
           }
-          // -------------------------------------------------
+          // --- Check/Fix empty chunkSource specifically ---
+          if (sanitizedMetadata.hasOwnProperty('chunkSource') && sanitizedMetadata.chunkSource === "") {
+            console.log("[DEBUG] ChromaDB: Replacing empty chunkSource with placeholder '-' for chunk", i + 1);
+            sanitizedMetadata.chunkSource = "-";
+          }
+          // -----------------------------------------------
 
           // --- Log metadata before push ---
           console.log(`[DEBUG] ChromaDB Preparing submission for chunk ${i + 1}`);
@@ -359,40 +364,56 @@ const Chroma = {
 
       if (vectors.length > 0) {
         // Batch the submissions for ChromaDB add operation
-        const BATCH_SIZE = 10; // Adjust batch size as needed (start smaller)
-        console.log(`ChromaDB:addDocumentToNamespace - Submitting ${submission.ids.length} records to ChromaDB in batches of ${BATCH_SIZE}...`);
+        const BATCH_SIZE = 10; // Keep batch size definition
+        const totalCount = submission.ids.length;
+        console.log(`ChromaDB:addDocumentToNamespace - Total submissions to process: ${totalCount}`);
 
-        for (let i = 0; i < submission.ids.length; i += BATCH_SIZE) {
-          const batchIds = submission.ids.slice(i, i + BATCH_SIZE);
-          const batchEmbeddings = submission.embeddings.slice(i, i + BATCH_SIZE);
-          const batchMetadatas = submission.metadatas.slice(i, i + BATCH_SIZE);
-          const batchDocuments = submission.documents.slice(i, i + BATCH_SIZE);
+        if (totalCount > BATCH_SIZE) {
+          console.log(`ChromaDB:addDocumentToNamespace - Submitting ${totalCount} records to ChromaDB in batches of ${BATCH_SIZE}...`);
+          for (let i = 0; i < totalCount; i += BATCH_SIZE) {
+            const batchIds = submission.ids.slice(i, i + BATCH_SIZE);
+            const batchEmbeddings = submission.embeddings.slice(i, i + BATCH_SIZE);
+            const batchMetadatas = submission.metadatas.slice(i, i + BATCH_SIZE);
+            const batchDocuments = submission.documents.slice(i, i + BATCH_SIZE);
 
-          const batchPayload = {
-            ids: batchIds,
-            embeddings: batchEmbeddings,
-            metadatas: batchMetadatas,
-            documents: batchDocuments,
-          };
+            const batchPayload = {
+              ids: batchIds,
+              embeddings: batchEmbeddings,
+              metadatas: batchMetadatas,
+              documents: batchDocuments,
+            };
 
-          try {
-            console.log(`ChromaDB:addDocumentToNamespace - Writing batch of ${batchIds.length} records...`);
-            // Log details of the batch before sending
-            console.log(`[DEBUG] ChromaDB Batch Metadata Keys: ${batchMetadatas.map(m => Object.keys(m).join(', ')).join(' | ')}`);
-            console.log(`[DEBUG] ChromaDB Batch Document Lengths: ${batchDocuments.map(d => d?.length ?? 0).join(', ')}`);
-            // Log the payload right before sending (optional, can be very verbose)
-            // console.log("[DEBUG] ChromaDB batch payload:", JSON.stringify(batchPayload, null, 2));
-            const additionResult = await collection.add(batchPayload);
-            console.log("[DEBUG] ChromaDB collection.add result:", additionResult); // Log the raw result
-            if (!additionResult) throw new Error("Collection.add returned unsuccessful status."); // Reinstate the check
-            console.log(`ChromaDB:addDocumentToNamespace - Batch written successfully.`);
-          } catch (error) {
-            console.error(`[ERROR] ChromaDB: Failed to write batch! Batch Size: ${batchIds.length}`);
-            // Log the specific batch data that failed (might be large!)
-            // console.error("[ERROR] ChromaDB: Failing batch data:", JSON.stringify(batchPayload, null, 2));
-            // Re-throw the original error to be caught by the outer try/catch
-            throw new Error(`Error embedding batch into ChromaDB: ${error.message}`);
+            try {
+              console.log(`ChromaDB:addDocumentToNamespace - Writing batch of ${batchIds.length} records...`);
+              const additionResult = await collection.add(batchPayload);
+              console.log("[DEBUG] ChromaDB collection.add result:", additionResult); // Log the raw result
+              if (!additionResult) throw new Error("Collection.add returned unsuccessful status."); // Reinstate the check
+              console.log(`ChromaDB:addDocumentToNamespace - Batch written successfully.`);
+            } catch (error) {
+              console.error(`[ERROR] ChromaDB: Failed to write batch! Batch Size: ${batchIds.length}`);
+              throw new Error(`Error embedding batch into ChromaDB: ${error.message}`);
+            }
           }
+        } else if (totalCount > 0) {
+          // If total count is positive but not > BATCH_SIZE, submit all at once
+          console.log(`ChromaDB:addDocumentToNamespace - Submitting ${totalCount} records to ChromaDB in a single batch...`);
+          const singlePayload = {
+            ids: submission.ids,
+            embeddings: submission.embeddings,
+            metadatas: submission.metadatas,
+            documents: submission.documents,
+          };
+          try {
+            const additionResult = await collection.add(singlePayload);
+            console.log("[DEBUG] ChromaDB collection.add result:", additionResult);
+            if (!additionResult) throw new Error("Collection.add returned unsuccessful status.");
+            console.log(`ChromaDB:addDocumentToNamespace - Single submission successful.`);
+          } catch (error) {
+            console.error(`[ERROR] ChromaDB: Failed to write single submission! Count: ${totalCount}`);
+            throw new Error(`Error embedding single submission into ChromaDB: ${error.message}`);
+          }
+        } else {
+            console.log("ChromaDB:addDocumentToNamespace - No submissions to write.");
         }
 
         // Caching logic (should use the original `vectors` array)

@@ -414,6 +414,14 @@ const LanceDb = {
           console.log("[DEBUG] LanceDB otherMetadata:", JSON.stringify(otherMetadata));
           // --- End Log ---
 
+          // --- Check/Fix empty chunkSource specifically ---
+          if (otherMetadata.hasOwnProperty('chunkSource') && otherMetadata.chunkSource === "") {
+            const filename = otherMetadata.title || 'unknown_filename'; // Use title as filename
+            console.log(`[DEBUG] LanceDB: Replacing empty chunkSource with filename '${filename}' for chunk`, i + 1);
+            otherMetadata.chunkSource = filename;
+          }
+          // -----------------------------------------------
+
           submissions.push({
             id: vectorRecord.id,
             vector: vectorRecord.values,
@@ -429,29 +437,45 @@ const LanceDb = {
       }
 
       if (vectors.length > 0) {
-        const chunks = [];
-        for (const chunk of toChunks(vectors, 500)) chunks.push(chunk);
-
-        const BATCH_SIZE = 10; // Define an even smaller batch size for debugging
-        console.log(`LanceDB:addDocumentToNamespace - Submitting ${submissions.length} records to LanceDB in batches of ${BATCH_SIZE}...`);
+        // Caching logic happens later, prepare DB submission first
+        const BATCH_SIZE = 10; // Keep batch size definition
+        const totalCount = submissions.length;
+        console.log(`LanceDB:addDocumentToNamespace - Total submissions to process: ${totalCount}`);
         const { client } = await this.connect();
 
-        for (const submissionBatch of toChunks(submissions, BATCH_SIZE)) {
-            try {
-                console.log(`LanceDB:addDocumentToNamespace - Writing batch of ${submissionBatch.length} records...`);
-                await this.updateOrCreateCollection(client, submissionBatch, namespace);
-                console.log(`LanceDB:addDocumentToNamespace - Batch written successfully.`);
-            } catch (batchError) {
-                console.error(`[ERROR] LanceDB: Failed to write batch! Batch Size: ${submissionBatch.length}`);
-                // Log the specific batch data that failed (might be large!)
-                console.error("[ERROR] LanceDB: Failing batch data:", JSON.stringify(submissionBatch, null, 2));
-                // Re-throw the original error to be caught by the outer try/catch
-                throw batchError;
-            }
+        if (totalCount > BATCH_SIZE) {
+          // Apply batching only if total count exceeds batch size
+          console.log(`LanceDB:addDocumentToNamespace - Submitting ${totalCount} records to LanceDB in batches of ${BATCH_SIZE}...`);
+          for (const submissionBatch of toChunks(submissions, BATCH_SIZE)) {
+              try {
+                  console.log(`LanceDB:addDocumentToNamespace - Writing batch of ${submissionBatch.length} records...`);
+                  await this.updateOrCreateCollection(client, submissionBatch, namespace);
+                  console.log(`LanceDB:addDocumentToNamespace - Batch written successfully.`);
+              } catch (batchError) {
+                  console.error(`[ERROR] LanceDB: Failed to write batch! Batch Size: ${submissionBatch.length}`);
+                  console.error("[ERROR] LanceDB: Failing batch data:", JSON.stringify(submissionBatch, null, 2));
+                  throw batchError; // Re-throw to be caught by outer try/catch
+              }
+          }
+        } else if (totalCount > 0) {
+          // If total count is positive but not > BATCH_SIZE, submit all at once
+          console.log(`LanceDB:addDocumentToNamespace - Submitting ${totalCount} records to LanceDB in a single batch...`);
+          try {
+            await this.updateOrCreateCollection(client, submissions, namespace);
+            console.log(`LanceDB:addDocumentToNamespace - Single submission successful.`);
+          } catch (singleSubmitError) {
+            console.error(`[ERROR] LanceDB: Failed to write single submission! Count: ${totalCount}`);
+            console.error("[ERROR] LanceDB: Failing submission data:", JSON.stringify(submissions, null, 2));
+            throw singleSubmitError; // Re-throw to be caught by outer try/catch
+          }
+        } else {
+            console.log("LanceDB:addDocumentToNamespace - No submissions to write.");
         }
 
-        // Caching should happen after successful DB writes
-        await storeVectorResult(chunks, fullFilePath);
+        // Caching logic (happens after successful DB writes)
+        const chunksForCache = [];
+        for (const chunk of toChunks(vectors, 500)) chunksForCache.push(chunk);
+        await storeVectorResult(chunksForCache, fullFilePath);
       }
 
       // Bulk insert associations after all DB batches are done
