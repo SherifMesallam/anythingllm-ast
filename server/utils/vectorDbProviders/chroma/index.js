@@ -327,7 +327,16 @@ const Chroma = {
             console.log("[DEBUG] ChromaDB: Replacing empty chunkSource with placeholder '-' for chunk", i + 1);
             sanitizedMetadata.chunkSource = "-";
           }
-          // -----------------------------------------------
+          // -------------------------------------------------
+          
+          // --- Comprehensive check/fix for ALL empty strings in metadata ---
+          for (const key in sanitizedMetadata) {
+            if (sanitizedMetadata.hasOwnProperty(key) && typeof sanitizedMetadata[key] === 'string' && sanitizedMetadata[key] === "") {
+              console.log(`[DEBUG] ChromaDB: Replacing empty string in metadata key '${key}' with placeholder '-' for chunk`, i + 1);
+              sanitizedMetadata[key] = "-";
+            }
+          }
+          // ----------------------------------------------------------------
 
           // --- Log metadata before push ---
           console.log(`[DEBUG] ChromaDB Preparing submission for chunk ${i + 1}`);

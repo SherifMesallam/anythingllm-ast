@@ -414,13 +414,14 @@ const LanceDb = {
           console.log("[DEBUG] LanceDB otherMetadata:", JSON.stringify(otherMetadata));
           // --- End Log ---
 
-          // --- Check/Fix empty chunkSource specifically ---
-          if (otherMetadata.hasOwnProperty('chunkSource') && otherMetadata.chunkSource === "") {
-            const filename = otherMetadata.title || 'unknown_filename'; // Use title as filename
-            console.log(`[DEBUG] LanceDB: Replacing empty chunkSource with filename '${filename}' for chunk`, i + 1);
-            otherMetadata.chunkSource = filename;
+          // --- Comprehensive check/fix for ALL empty strings in metadata ---
+          for (const key in otherMetadata) {
+            if (otherMetadata.hasOwnProperty(key) && typeof otherMetadata[key] === 'string' && otherMetadata[key] === "") {
+              console.log(`[DEBUG] LanceDB: Replacing empty string in metadata key '${key}' with placeholder '-' for chunk`, i + 1);
+              otherMetadata[key] = "-";
+            }
           }
-          // -----------------------------------------------
+          // ----------------------------------------------------------------
 
           submissions.push({
             id: vectorRecord.id,

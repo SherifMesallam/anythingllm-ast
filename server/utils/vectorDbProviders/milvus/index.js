@@ -215,13 +215,32 @@ const Milvus = {
       if (!!vectorValues && vectorValues.length > 0) {
         for (const [i, vector] of vectorValues.entries()) {
           if (!vectorDimension) vectorDimension = vector.length;
+
+          // --- Skip chunks with empty text ---
+          const currentText = textChunks[i];
+          if (!currentText || currentText.trim().length === 0) {
+            console.log(`[WARN] Milvus: Skipping chunk ${i + 1}/${vectorValues.length} due to empty text content.`);
+            continue; // Skip this iteration entirely
+          }
+          // --- End Check ---
+
           const vectorRecord = {
             id: uuidv4(),
             values: vector,
             // [DO NOT REMOVE]
             // LangChain will be unable to find your text if you embed manually and dont include the `text` key.
-            metadata: { ...metadata, text: textChunks[i] },
+            metadata: { ...metadata, text: currentText }, // Use validated text
           };
+
+          // --- Comprehensive check/fix for ALL empty strings in metadata ---
+          // Important: Check metadata *within* vectorRecord.metadata
+          for (const key in vectorRecord.metadata) {
+            if (vectorRecord.metadata.hasOwnProperty(key) && typeof vectorRecord.metadata[key] === 'string' && vectorRecord.metadata[key] === "") {
+              console.log(`[DEBUG] Milvus: Replacing empty string in metadata key '${key}' with placeholder '-' for chunk`, i + 1);
+              vectorRecord.metadata[key] = "-";
+            }
+          }
+          // ----------------------------------------------------------------
 
           vectors.push(vectorRecord);
           documentVectors.push({ docId, vectorId: vectorRecord.id });
@@ -233,29 +252,70 @@ const Milvus = {
       }
 
       if (vectors.length > 0) {
-        const chunks = [];
+        const BATCH_SIZE = 100; // Define batch size (matches existing loop)
+        const totalCount = vectors.length;
+        console.log(`Milvus:addDocumentToNamespace - Total submissions to process: ${totalCount}`);
         const { client } = await this.connect();
         await this.getOrCreateCollection(client, namespace, vectorDimension);
 
-        console.log("Inserting vectorized chunks into Milvus.");
-        for (const chunk of toChunks(vectors, 100)) {
-          chunks.push(chunk);
-          const insertResult = await client.insert({
-            collection_name: this.normalize(namespace),
-            data: chunk.map((item) => ({
-              id: item.id,
-              vector: item.values,
-              metadata: item.metadata,
-            })),
-          });
+        if (totalCount > BATCH_SIZE) {
+          // Apply batching only if total count exceeds batch size
+          console.log(`Milvus:addDocumentToNamespace - Submitting ${totalCount} records to Milvus in batches of ${BATCH_SIZE}...`);
+          for (const chunk of toChunks(vectors, BATCH_SIZE)) {
+            try {
+              console.log(`Milvus:addDocumentToNamespace - Writing batch of ${chunk.length} records...`);
+              const insertResult = await client.insert({
+                collection_name: this.normalize(namespace),
+                data: chunk.map((item) => ({
+                  id: item.id,
+                  vector: item.values,
+                  metadata: item.metadata,
+                })),
+              });
 
-          if (insertResult?.status.error_code !== "Success") {
-            throw new Error(
-              `Error embedding into Milvus! Reason:${insertResult?.status.reason}`
-            );
+              if (insertResult?.status.error_code !== "Success") {
+                throw new Error(
+                  `Error embedding batch into Milvus! Reason:${insertResult?.status.reason}`
+                );
+              }
+              console.log(`Milvus:addDocumentToNamespace - Batch written successfully.`);
+            } catch (batchError) {
+              console.error(`[ERROR] Milvus: Failed to write batch! Batch Size: ${chunk.length}`);
+              throw batchError; // Re-throw
+            }
           }
+        } else if (totalCount > 0) {
+           // If total count is positive but not > BATCH_SIZE, submit all at once
+           console.log(`Milvus:addDocumentToNamespace - Submitting ${totalCount} records to Milvus in a single batch...`);
+           try {
+              const insertResult = await client.insert({
+                collection_name: this.normalize(namespace),
+                data: vectors.map((item) => ({
+                  id: item.id,
+                  vector: item.values,
+                  metadata: item.metadata,
+                })),
+              });
+              if (insertResult?.status.error_code !== "Success") {
+                throw new Error(
+                  `Error embedding single submission into Milvus! Reason:${insertResult?.status.reason}`
+                );
+              }
+              console.log(`Milvus:addDocumentToNamespace - Single submission successful.`);
+           } catch (singleSubmitError) {
+              console.error(`[ERROR] Milvus: Failed to write single submission! Count: ${totalCount}`);
+              throw singleSubmitError; // Re-throw
+           }
+        } else {
+            console.log("Milvus:addDocumentToNamespace - No submissions to write.");
         }
-        await storeVectorResult(chunks, fullFilePath);
+
+        // Caching logic (happens after successful DB writes)
+        const chunksForCache = [];
+        for (const chunk of toChunks(vectors, 500)) chunksForCache.push(chunk);
+        await storeVectorResult(chunksForCache, fullFilePath);
+
+        // Flush after all DB writes are done
         await client.flushSync({
           collection_names: [this.normalize(namespace)],
         });
