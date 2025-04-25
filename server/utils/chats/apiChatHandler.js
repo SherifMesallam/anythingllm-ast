@@ -238,16 +238,18 @@ async function chatSync({
     };
   }
 
-  // <<< UPDATED LOGGING HERE >>>
+  // <<< CORRECTED LOGGING HERE >>>
   try {
+    // Access properties directly from the source object
     const sourceInfo = vectorSearchResults.sources.map(source => ({
-      docSource: source?.metadata?.docSource || 'N/A',
-      sourceType: source?.metadata?.sourceType || 'N/A'
+      docSource: source?.docSource || 'N/A', // Corrected: No '.metadata'
+      sourceType: source?.sourceType || 'N/A' // Corrected: No '.metadata'
     }));
     console.log("Retrieved Vector Search Source Info:", JSON.stringify(sourceInfo, null, 2));
   } catch (e) {
     console.log("Error logging source info:", e.message);
-    console.log("Original sources:", JSON.stringify(vectorSearchResults.sources, null, 2));
+    // Log the original structure in case of error for easier debugging
+    console.log("Original sources structure:", JSON.stringify(vectorSearchResults.sources, null, 2));
   }
   // <<< END LOGGING >>>
 
@@ -588,16 +590,18 @@ async function streamChat({
     return;
   }
 
-  // <<< UPDATED LOGGING HERE >>>
+  // <<< CORRECTED LOGGING HERE >>>
   try {
+    // Access properties directly from the source object
     const sourceInfo = vectorSearchResults.sources.map(source => ({
-      docSource: source?.metadata?.docSource || 'N/A',
-      sourceType: source?.metadata?.sourceType || 'N/A'
+      docSource: source?.docSource || 'N/A', // Corrected: No '.metadata'
+      sourceType: source?.sourceType || 'N/A' // Corrected: No '.metadata'
     }));
     console.log("Retrieved Vector Search Source Info:", JSON.stringify(sourceInfo, null, 2));
   } catch (e) {
     console.log("Error logging source info:", e.message);
-    console.log("Original sources:", JSON.stringify(vectorSearchResults.sources, null, 2));
+    // Log the original structure in case of error for easier debugging
+    console.log("Original sources structure:", JSON.stringify(vectorSearchResults.sources, null, 2));
   }
   // <<< END LOGGING >>>
 
