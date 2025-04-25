@@ -238,8 +238,17 @@ async function chatSync({
     };
   }
 
-  // <<< ADD LOGGING HERE >>>
-  console.log("Retrieved Vector Search Sources (Metadata):", JSON.stringify(vectorSearchResults.sources, null, 2));
+  // <<< UPDATED LOGGING HERE >>>
+  try {
+    const sourceInfo = vectorSearchResults.sources.map(source => ({
+      docSource: source?.metadata?.docSource || 'N/A',
+      sourceType: source?.metadata?.sourceType || 'N/A'
+    }));
+    console.log("Retrieved Vector Search Source Info:", JSON.stringify(sourceInfo, null, 2));
+  } catch (e) {
+    console.log("Error logging source info:", e.message);
+    console.log("Original sources:", JSON.stringify(vectorSearchResults.sources, null, 2));
+  }
   // <<< END LOGGING >>>
 
   const { fillSourceWindow } = require("../helpers/chat");
@@ -579,8 +588,17 @@ async function streamChat({
     return;
   }
 
-  // <<< ADD LOGGING HERE >>>
-  console.log("Retrieved Vector Search Sources (Metadata):", JSON.stringify(vectorSearchResults.sources, null, 2));
+  // <<< UPDATED LOGGING HERE >>>
+  try {
+    const sourceInfo = vectorSearchResults.sources.map(source => ({
+      docSource: source?.metadata?.docSource || 'N/A',
+      sourceType: source?.metadata?.sourceType || 'N/A'
+    }));
+    console.log("Retrieved Vector Search Source Info:", JSON.stringify(sourceInfo, null, 2));
+  } catch (e) {
+    console.log("Error logging source info:", e.message);
+    console.log("Original sources:", JSON.stringify(vectorSearchResults.sources, null, 2));
+  }
   // <<< END LOGGING >>>
 
   const { fillSourceWindow } = require("../helpers/chat");
