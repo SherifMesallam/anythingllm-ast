@@ -238,6 +238,10 @@ async function chatSync({
     };
   }
 
+  // <<< ADD LOGGING HERE >>>
+  console.log("Retrieved Vector Search Sources (Metadata):", JSON.stringify(vectorSearchResults.sources, null, 2));
+  // <<< END LOGGING >>>
+
   const { fillSourceWindow } = require("../helpers/chat");
   const filledSources = fillSourceWindow({
     nDocs: workspace?.topN || 4,
@@ -574,6 +578,10 @@ async function streamChat({
     });
     return;
   }
+
+  // <<< ADD LOGGING HERE >>>
+  console.log("Retrieved Vector Search Sources (Metadata):", JSON.stringify(vectorSearchResults.sources, null, 2));
+  // <<< END LOGGING >>>
 
   const { fillSourceWindow } = require("../helpers/chat");
   const filledSources = fillSourceWindow({
