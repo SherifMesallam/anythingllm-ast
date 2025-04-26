@@ -14,7 +14,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # hadolint ignore=DL3008,DL3013
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
-        unzip curl gnupg libgfortran5 libgbm1 tzdata netcat nano htop net-tools dnsutils jq tree \
+        unzip curl gnupg libgfortran5 libgbm1 tzdata netcat nano htop net-tools dnsutils jq tree sudo \
         libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 \
         libgcc1 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libx11-6 libx11-xcb1 libxcb1 \
         libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
@@ -38,6 +38,10 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     rm -rf /var/lib/apt/lists/*
 # Install lancedb
 RUN pip3 install lancedb
+
+# Grant passwordless sudo to the anythingllm user
+RUN echo 'anythingllm ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/anythingllm-sudo && \
+    chmod 0440 /etc/sudoers.d/anythingllm-sudo
 
 # Create a group and user with specific UID and GID
 # MODIFIED: Added '|| true' to groupadd and use $ARG_GID in useradd
@@ -86,7 +90,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # hadolint ignore=DL3008,DL3013
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
-        curl gnupg libgfortran5 libgbm1 tzdata netcat nano htop net-tools dnsutils jq tree \
+        curl gnupg libgfortran5 libgbm1 tzdata netcat nano htop net-tools dnsutils jq tree sudo \
         libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 \
         libgcc1 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libx11-6 libx11-xcb1 libxcb1 \
         libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
@@ -110,6 +114,10 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     rm -rf /var/lib/apt/lists/*
 # Install lancedb
 RUN pip3 install lancedb
+
+# Grant passwordless sudo to the anythingllm user
+RUN echo 'anythingllm ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/anythingllm-sudo && \
+    chmod 0440 /etc/sudoers.d/anythingllm-sudo
 
 # Create a group and user with specific UID and GID
 # MODIFIED: Added '|| true' to groupadd and use $ARG_GID in useradd
