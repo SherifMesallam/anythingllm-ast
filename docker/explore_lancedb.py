@@ -35,7 +35,7 @@ def inspect_table(db, table_name):
             elif action == 'a':
                 print(f"  Fetching first {DISPLAY_LIMIT} rows...")
                 try:
-                    rows = table.limit(DISPLAY_LIMIT).to_list()
+                    rows = table.search().limit(DISPLAY_LIMIT).to_list()
                     print_rows(rows)
                 except Exception as e:
                     print(f"  Error fetching rows: {e}")

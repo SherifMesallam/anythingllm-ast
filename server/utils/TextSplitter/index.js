@@ -15,7 +15,7 @@
 
 const path = require('path');
 const { RecursiveCharacterTextSplitter } = require("@langchain/textsplitters");
-const { isNullOrNaN } = require("../../helpers");
+const { isNullOrNaN } = require("../helpers");
 
 // Attempt to require tree-sitter and language grammars
 let Parser;
