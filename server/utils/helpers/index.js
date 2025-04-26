@@ -353,20 +353,23 @@ function getLLMProviderClass({ provider = null } = {}) {
 // and by default we assume it can handle 1,000 chars, but some models use work with smaller
 // chars so here we can override that value when embedding information.
 function maximumChunkLength() {
-  if (
-    !!process.env.EMBEDDING_MODEL_MAX_CHUNK_LENGTH &&
-    !isNaN(process.env.EMBEDDING_MODEL_MAX_CHUNK_LENGTH) &&
-    Number(process.env.EMBEDDING_MODEL_MAX_CHUNK_LENGTH) > 1
-  )
-    return Number(process.env.EMBEDDING_MODEL_MAX_CHUNK_LENGTH);
-
-  return 1_000;
+  // Determinate maximum chunk length based on maximum model context window size
+  const EMBEDDING_MODEL_MAX_CHUNK_LENGTH = process.env.EMBEDDING_MODEL_MAX_CHUNK_LENGTH
+    ? Number(process.env.EMBEDDING_MODEL_MAX_CHUNK_LENGTH)
+    : 1000;
+  return isNaN(EMBEDDING_MODEL_MAX_CHUNK_LENGTH) ? 1000 : EMBEDDING_MODEL_MAX_CHUNK_LENGTH;
 }
 
 function toChunks(arr, size) {
   return Array.from({ length: Math.ceil(arr.length / size) }, (_v, i) =>
     arr.slice(i * size, i * size + size)
   );
+}
+
+// Add the missing isNullOrNaN function
+function isNullOrNaN(value) {
+  if (value === null) return true;
+  return isNaN(value);
 }
 
 module.exports = {
@@ -376,4 +379,5 @@ module.exports = {
   getLLMProviderClass,
   getLLMProvider,
   toChunks,
+  isNullOrNaN,
 };
