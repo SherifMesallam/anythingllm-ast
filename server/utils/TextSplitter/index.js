@@ -269,6 +269,12 @@ class TextSplitter {
       // 1. Initialize parser
       this.log(`[TreeSitter] Initializing parser for ${languageName}...`);
       const parser = new Parser();
+      // Add detailed logging for the language module object
+      this.log(`[TreeSitter] Language module object for ${languageName}:`, LanguageModule);
+      if (!LanguageModule || typeof LanguageModule !== 'object') {
+        this.log(`\x1b[31m[ERROR]\x1b[0m [TreeSitter] Invalid or undefined LanguageModule object for ${languageName}!`);
+        throw new Error(`Invalid language object passed for ${languageName}`);
+      }
       parser.setLanguage(LanguageModule);
       this.log(`[TreeSitter] Parser initialized successfully.`);
 
