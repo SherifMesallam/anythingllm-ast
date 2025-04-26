@@ -318,6 +318,9 @@ async function chatSync({
     rawHistory
   );
 
+  // Log the complete request before sending to LLM
+  console.log("LLM Request (sync):", JSON.stringify(messages, null, 2));
+
   // Send the text completion.
   const { textResponse, metrics: performanceMetrics } =
     await LLMConnector.getChatCompletion(messages, {
@@ -669,6 +672,9 @@ async function streamChat({
     },
     rawHistory
   );
+
+  // Log the complete request before sending to LLM
+  console.log("LLM Request (stream):", JSON.stringify(messages, null, 2));
 
   // If streaming is not explicitly enabled for connector
   // we do regular waiting of a response and send a single chunk.
