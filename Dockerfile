@@ -14,12 +14,12 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # hadolint ignore=DL3008,DL3013
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
-        unzip curl gnupg libgfortran5 libgbm1 tzdata netcat \
+        unzip curl gnupg libgfortran5 libgbm1 tzdata netcat nano htop net-tools dnsutils jq tree \
         libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 \
         libgcc1 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libx11-6 libx11-xcb1 libxcb1 \
         libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
         libxss1 libxtst6 ca-certificates fonts-liberation libappindicator1 libnss3 lsb-release \
-        xdg-utils git build-essential ffmpeg && \
+        xdg-utils git build-essential ffmpeg python3-pip && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list && \
@@ -36,6 +36,8 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
         echo "Installed uvx! $(uv --version)" && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+# Install lancedb
+RUN pip3 install lancedb
 
 # Create a group and user with specific UID and GID
 # MODIFIED: Added '|| true' to groupadd and use $ARG_GID in useradd
@@ -47,11 +49,13 @@ RUN (groupadd -g "$ARG_GID" anythingllm || true) && \
 # Copy docker helper scripts
 COPY ./docker/docker-entrypoint.sh /usr/local/bin/
 COPY ./docker/docker-healthcheck.sh /usr/local/bin/
+COPY ./docker/explore_lancedb.py /usr/local/bin/
 COPY --chown="$ARG_UID":"$ARG_GID" ./docker/.env.example /app/server/.env
 
 # Ensure the scripts are executable
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh && \
-    chmod +x /usr/local/bin/docker-healthcheck.sh
+    chmod +x /usr/local/bin/docker-healthcheck.sh && \
+    chmod +x /usr/local/bin/explore_lancedb.py
 
 USER anythingllm
 WORKDIR /app
@@ -82,12 +86,12 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # hadolint ignore=DL3008,DL3013
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
-        curl gnupg libgfortran5 libgbm1 tzdata netcat \
+        curl gnupg libgfortran5 libgbm1 tzdata netcat nano htop net-tools dnsutils jq tree \
         libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 \
         libgcc1 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libx11-6 libx11-xcb1 libxcb1 \
         libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
         libxss1 libxtst6 ca-certificates fonts-liberation libappindicator1 libnss3 lsb-release \
-        xdg-utils git build-essential ffmpeg && \
+        xdg-utils git build-essential ffmpeg python3-pip && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list && \
@@ -104,6 +108,8 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
         echo "Installed uvx! $(uv --version)" && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+# Install lancedb
+RUN pip3 install lancedb
 
 # Create a group and user with specific UID and GID
 # MODIFIED: Added '|| true' to groupadd and use $ARG_GID in useradd
@@ -115,11 +121,13 @@ RUN (groupadd -g "$ARG_GID" anythingllm || true) && \
 # Copy docker helper scripts
 COPY ./docker/docker-entrypoint.sh /usr/local/bin/
 COPY ./docker/docker-healthcheck.sh /usr/local/bin/
+COPY ./docker/explore_lancedb.py /usr/local/bin/
 COPY --chown="$ARG_UID":"$ARG_GID" ./docker/.env.example /app/server/.env
 
 # Ensure the scripts are executable
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh && \
-    chmod +x /usr/local/bin/docker-healthcheck.sh
+    chmod +x /usr/local/bin/docker-healthcheck.sh && \
+    chmod +x /usr/local/bin/explore_lancedb.py
 
 #############################################
 # COMMON BUILD FLOW FOR ALL ARCHS
