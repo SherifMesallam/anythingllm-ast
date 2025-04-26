@@ -257,26 +257,39 @@ class TextSplitter {
 
   // NEW: Method for tree-sitter based splitting
   async #splitTextWithTreeSitter(documentText, languageInfo) {
+    // NOTE: We no longer use languageInfo.language directly from the top-level require
+    //       due to issues with what require() was returning.
+    //       We will require the language module dynamically inside this method.
     const languageName = languageInfo.name;
-    const LanguageModule = languageInfo.language;
     this.log(`[TreeSitter] === Starting splitting for ${languageName} ===`);
 
     let finalChunks /*: ChunkWithMetadata[]*/ = [];
-    const chunkSize = TextSplitter.determineMaxChunkSize(this.config?.chunkSize, 1000); // TODO: Make embedder limit dynamic
-    let treeSitterNodesToChunk = []; // Intermediate array holds { text, metadata }
+    const chunkSize = TextSplitter.determineMaxChunkSize(this.config?.chunkSize, 1000);
+    let treeSitterNodesToChunk = [];
 
     try {
-      // 1. Initialize parser
-      this.log(`[TreeSitter] Initializing parser for ${languageName}...`);
+      // 1. Initialize parser & Load Language Module Dynamically
+      this.log(`[TreeSitter] Initializing parser and loading language module for ${languageName}...`);
       const parser = new Parser();
-      // Add detailed logging for the language module object
-      this.log(`[TreeSitter] Language module object for ${languageName}:`, LanguageModule);
+      let LanguageModule;
+      try {
+        // Construct the package name based on the language name
+        const grammarPackageName = `tree-sitter-${languageName}`;
+        this.log(`[TreeSitter] Attempting to require grammar package: '${grammarPackageName}'`);
+        LanguageModule = require(grammarPackageName);
+        this.log(`[TreeSitter] Successfully required grammar package: '${grammarPackageName}'`);
+      } catch (loadError) {
+        this.log(`\x1b[31m[ERROR]\x1b[0m [TreeSitter] Failed to require language grammar package for ${languageName}. Error: ${loadError.message}`);
+        throw loadError; // Re-throw to trigger the outer catch block
+      }
+
+      this.log(`[TreeSitter] Language module object for ${languageName}:`, LanguageModule); // Keep this log for verification
       if (!LanguageModule || typeof LanguageModule !== 'object') {
-        this.log(`\x1b[31m[ERROR]\x1b[0m [TreeSitter] Invalid or undefined LanguageModule object for ${languageName}!`);
-        throw new Error(`Invalid language object passed for ${languageName}`);
+        this.log(`\x1b[31m[ERROR]\x1b[0m [TreeSitter] Invalid or undefined LanguageModule object returned by require for ${languageName}!`);
+        throw new Error(`Invalid language object returned by require for ${languageName}`);
       }
       parser.setLanguage(LanguageModule);
-      this.log(`[TreeSitter] Parser initialized successfully.`);
+      this.log(`[TreeSitter] Parser initialized and language set successfully.`);
 
       // 2. Parse the document
       this.log(`[TreeSitter] Parsing document text (length: ${documentText.length})...`);
@@ -298,7 +311,7 @@ class TextSplitter {
           ]
         `;
       } else if (languageName === 'php') {
-        queryString = `
+         queryString = `
           [
             (namespace_definition) @entity
             (class_declaration) @entity
@@ -309,7 +322,7 @@ class TextSplitter {
           ]
         `;
       } else if (languageName === 'css') {
-         queryString = `
+          queryString = `
            [
              (rule_set) @entity
              (at_rule) @entity ; e.g., @media, @keyframes
@@ -339,12 +352,11 @@ ${queryString.trim()}
       for (const capture of captures) {
         const node = capture.node;
         const nodeType = node.type;
-        const nodeName = this.#extractJsName(node); // Example: Use helper for JS name extraction
-        // TODO: Implement similar name extraction helpers for PHP, CSS if needed
+        const nodeName = this.#extractJsName(node);
 
-        const startLine = node.startPosition.row + 1; // tree-sitter is 0-indexed, convert to 1-indexed
+        const startLine = node.startPosition.row + 1;
         const endLine = node.endPosition.row + 1;
-        const text = node.text; // Get the text content of the captured node
+        const text = node.text;
 
         this.log(`[TreeSitter] Capture ${processedCount + 1}/${captures.length}: Node Type='${nodeType}', Name='${nodeName}', Lines=${startLine}-${endLine}, Text Length=${text.length}`);
 
@@ -360,7 +372,7 @@ ${queryString.trim()}
           language: languageName,
           nodeType: nodeType,
           nodeName: nodeName,
-          parentName: null, // TODO: Implement parent finding logic if needed
+          parentName: null,
           startLine: startLine,
           endLine: endLine,
         };
@@ -403,14 +415,14 @@ ${queryString.trim()}
           });
         } else {
            this.log(`${logPrefix} is within size limit. Adding directly.`);
-          finalChunks.push(chunkInfo); // Push the whole { text, metadata } object
+          finalChunks.push(chunkInfo);
         }
         finalChunkIndex++;
       }
       this.log(`[TreeSitter] Finished size check. Total chunks before filtering: ${finalChunks.length}`);
 
     } catch (e) {
-      // If tree-sitter failed for *any* reason (parsing, querying, processing)
+      // If tree-sitter failed for *any* reason (loading, parsing, querying, processing)
       this.log(`\x1b[31m[TreeSitter] [ERROR]\x1b[0m Critical failure during tree-sitter processing for ${languageName}. Falling back to recursive splitting for the ENTIRE document. Error: ${e.message}`, e.stack);
       const recursiveSplitter = this.#getRecursiveSplitter();
       this.log(`[TreeSitter] Invoking recursive fallback for entire document...`);
