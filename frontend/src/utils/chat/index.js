@@ -81,41 +81,19 @@ export default function handleChat(
       chatId,
       metrics,
     });
-  } else if (
-    type === "textResponseChunk" ||
-    type === "finalizeResponseStream"
-  ) {
+  } else if (type === "textResponseChunk") {
     const chatIdx = _chatHistory.findIndex((chat) => chat.uuid === uuid);
     if (chatIdx !== -1) {
       const existingHistory = { ..._chatHistory[chatIdx] };
-      let updatedHistory;
-
-      // If the response is finalized, we can set the loading state to false.
-      // and append the metrics to the history.
-      if (type === "finalizeResponseStream") {
-        updatedHistory = {
-          ...existingHistory,
-          closed: close,
-          animate: !close,
-          pending: false,
-          chatId,
-          metrics,
-        };
-        setLoadingResponse(false);
-      } else {
-        updatedHistory = {
-          ...existingHistory,
-          content: existingHistory.content + textResponse,
-          sources,
-          error,
-          closed: close,
-          animate: !close,
-          pending: false,
-          chatId,
-          metrics,
-        };
-      }
-      _chatHistory[chatIdx] = updatedHistory;
+      _chatHistory[chatIdx] = {
+        ...existingHistory,
+        content: existingHistory.content + textResponse,
+        sources,
+        error,
+        closed: close,
+        animate: !close,
+        pending: false,
+      };
     } else {
       _chatHistory.push({
         uuid,
@@ -126,22 +104,43 @@ export default function handleChat(
         closed: close,
         animate: !close,
         pending: false,
-        chatId,
-        metrics,
       });
     }
     setChatHistory([..._chatHistory]);
-  } else if (type === "agentInitWebsocketConnection") {
-    setWebsocket(chatResult.websocketUUID);
   } else if (type === "finalizeResponseStream") {
     const chatIdx = _chatHistory.findIndex((chat) => chat.uuid === uuid);
-    if (chatIdx !== -1) {
-      _chatHistory[chatIdx - 1] = { ..._chatHistory[chatIdx - 1], chatId }; // update prompt with chatID
-      _chatHistory[chatIdx] = { ..._chatHistory[chatIdx], chatId }; // update response with chatID
-    }
+    console.log("Handling finalizeResponseStream chunk:", chatResult);
 
+    if (chatIdx !== -1) {
+      const existingHistory = { ..._chatHistory[chatIdx] };
+      const updatedHistory = {
+        ...existingHistory,
+        closed: close,
+        animate: !close,
+        pending: false,
+      };
+
+      if (chatId !== null && chatId !== undefined) {
+        console.log("Updating history with chatId:", chatId);
+        updatedHistory.chatId = chatId;
+        if (chatIdx > 0) {
+          _chatHistory[chatIdx - 1] = { ..._chatHistory[chatIdx - 1], chatId };
+        }
+      }
+
+      if (metrics && Object.keys(metrics).length > 0) {
+        console.log("Updating history with metrics:", metrics);
+        updatedHistory.metrics = metrics;
+      }
+
+      _chatHistory[chatIdx] = updatedHistory;
+    } else {
+      console.warn("Finalize chunk received but no existing chat history found for UUID:", uuid);
+    }
     setChatHistory([..._chatHistory]);
     setLoadingResponse(false);
+  } else if (type === "agentInitWebsocketConnection") {
+    setWebsocket(chatResult.websocketUUID);
   } else if (type === "stopGeneration") {
     const chatIdx = _chatHistory.length - 1;
     const existingHistory = { ..._chatHistory[chatIdx] };

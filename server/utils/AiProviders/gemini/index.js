@@ -479,8 +479,13 @@ class GeminiLLM {
     const lastUserContent = lastMessage.content; // Assuming content is string or compatible format
 
     this.#log(`Sending request to Gemini model ${this.model}...`);
+    const requestOptions = { tools: toolsForApi };
+    this.#log("Gemini Chat Request Options:", JSON.stringify(requestOptions, null, 2));
+    this.#log("Gemini Chat History Being Sent:", JSON.stringify(geminiHistory, null, 2));
+    this.#log("Gemini Chat Last User Content:", JSON.stringify(lastUserContent, null, 2));
+
     const result = await LLMPerformanceMonitor.measureAsyncFunction(
-       chat.sendMessage(lastUserContent, { tools: toolsForApi }) // Pass formatted tools here
+       chat.sendMessage(lastUserContent, requestOptions)
       .catch((e) => {
          console.error("Gemini API Error:", e);
          throw new Error(
@@ -670,12 +675,15 @@ class GeminiLLM {
 
     this.#log(`Streaming request to Gemini model ${this.model}...`);
 
+    const streamOptions = {
+        contents: [...geminiHistory, { role: 'user', parts: [{ text: lastUserContent }] }],
+        tools: toolsForApi,
+    };
+    this.#log("Gemini Stream Request Options:", JSON.stringify(streamOptions, null, 2));
+
     // Note: PerformanceMonitor needs adaptation for streams that yield multiple types (text, functionCall)
     // Call generateContentStream and await the initial response object containing stream and response promise
-    const streamingResult = await modelInstance.generateContentStream({
-        contents: [...geminiHistory, { role: 'user', parts: [{ text: lastUserContent }] }],
-        tools: toolsForApi, // Pass formatted tools here
-      }).catch((e) => {
+    const streamingResult = await modelInstance.generateContentStream(streamOptions).catch((e) => {
          console.error("Gemini API Stream Error:", e);
          throw new Error(
           `Gemini::streamGetChatCompletion failed. ${e.message || "Unknown error"}`
