@@ -367,12 +367,14 @@ async function chatSync({
     (completionResult?.toolCalls || completionResult?.functionCall) &&
     toolCallIteration < MAX_TOOL_CALL_ITERATIONS
   ) {
+    console.log(`[chatSync] Entering tool call loop iteration ${toolCallIteration + 1}`);
     toolCallIteration++;
     const toolCalls = completionResult.toolCalls;
     const functionCall = completionResult.functionCall;
 
     // Append the assistant's message with tool calls/function call to the history
     if (completionResult.message) {
+      console.log("[chatSync] Appending assistant message to history:", JSON.stringify(completionResult.message));
       messages.push(completionResult.message);
     } else {
       console.error("Assistant message object not found in completionResult");
@@ -388,28 +390,39 @@ async function chatSync({
         let toolResultContent = "";
 
         console.log(
-          `Iteration ${toolCallIteration}: Executing OpenAI tool ${functionName} with args:`, functionArgs
+          `[chatSync Iteration ${toolCallIteration}] Executing OpenAI tool ${functionName} with args:`, functionArgs
         );
 
-        if (functionName === "ask_user_for_clarification") {
-           const clarificationResponse = executeAskUserTool(functionArgs, uuid, null, false, null);
-           if (clarificationResponse) return clarificationResponse;
-           toolResultContent = "Error processing clarification request.";
-        } else if (functionName === "search_documents") {
-          toolResultContent = await executeSearchDocumentsTool(functionArgs, workspace, LLMConnector);
-        } else if (functionName === "get_file_content") {
-          toolResultContent = await executeGetFileContentTool(functionArgs);
-        } else {
-          console.warn(`Unsupported OpenAI tool function: ${functionName}`);
-          toolResultContent = `Tool function ${functionName} is not supported.`;
+        try {
+          if (functionName === "ask_user_for_clarification") {
+            const clarificationResponse = executeAskUserTool(functionArgs, uuid, null, false, null);
+            if (clarificationResponse) {
+              console.log("[chatSync] Returning clarification response early.");
+              return clarificationResponse; // Early exit for clarification
+            }
+            toolResultContent = "Error processing clarification request.";
+          } else if (functionName === "search_documents") {
+            toolResultContent = await executeSearchDocumentsTool(functionArgs, workspace, LLMConnector);
+          } else if (functionName === "get_file_content") {
+            toolResultContent = await executeGetFileContentTool(functionArgs);
+          } else {
+            console.warn(`Unsupported OpenAI tool function: ${functionName}`);
+            toolResultContent = `Tool function ${functionName} is not supported.`;
+          }
+          console.log(`[chatSync Iteration ${toolCallIteration}] OpenAI tool ${functionName} execution result length: ${toolResultContent?.length ?? 0}`);
+        } catch(toolError) {
+          console.error(`[chatSync Iteration ${toolCallIteration}] Error executing OpenAI tool ${functionName}:`, toolError);
+          toolResultContent = `Error executing tool ${functionName}: ${toolError.message}`;
         }
 
-        messages.push({
+        const toolResponseMessage = {
           role: "tool",
           tool_call_id: toolCall.id,
           name: functionName,
           content: toolResultContent,
-        });
+        };
+        console.log("[chatSync] Appending tool response message to history:", JSON.stringify(toolResponseMessage));
+        messages.push(toolResponseMessage);
       }
     } else if (functionCall) {
        // --- Gemini Function Call Processing --- //
@@ -418,35 +431,53 @@ async function chatSync({
        let toolResultContent = "";
 
        console.log(
-         `Iteration ${toolCallIteration}: Executing Gemini function ${functionName} with args:`, functionArgs
+         `[chatSync Iteration ${toolCallIteration}] Executing Gemini function ${functionName} with args:`, functionArgs
        );
 
-       if (functionName === "ask_user_for_clarification") {
-          const clarificationResponse = executeAskUserTool(functionArgs, uuid, null, false, null);
-          if (clarificationResponse) return clarificationResponse;
-          toolResultContent = "Error processing clarification request.";
-       } else if (functionName === "search_documents") {
-          toolResultContent = await executeSearchDocumentsTool(functionArgs, workspace, LLMConnector);
-       } else if (functionName === "get_file_content") {
-          toolResultContent = await executeGetFileContentTool(functionArgs);
-       } else {
-         console.warn(`Unsupported Gemini function: ${functionName}`);
-         toolResultContent = `Function ${functionName} is not supported.`;
+       try {
+         if (functionName === "ask_user_for_clarification") {
+           const clarificationResponse = executeAskUserTool(functionArgs, uuid, null, false, null);
+           if (clarificationResponse) {
+             console.log("[chatSync] Returning clarification response early.");
+             return clarificationResponse; // Early exit for clarification
+           }
+           toolResultContent = "Error processing clarification request.";
+         } else if (functionName === "search_documents") {
+           toolResultContent = await executeSearchDocumentsTool(functionArgs, workspace, LLMConnector);
+         } else if (functionName === "get_file_content") {
+           toolResultContent = await executeGetFileContentTool(functionArgs);
+         } else {
+           console.warn(`Unsupported Gemini function: ${functionName}`);
+           toolResultContent = `Function ${functionName} is not supported.`;
+         }
+         console.log(`[chatSync Iteration ${toolCallIteration}] Gemini function ${functionName} execution result length: ${toolResultContent?.length ?? 0}`);
+       } catch (toolError) {
+         console.error(`[chatSync Iteration ${toolCallIteration}] Error executing Gemini function ${functionName}:`, toolError);
+         toolResultContent = `Error executing function ${functionName}: ${toolError.message}`;
        }
 
-       messages.push({
+       const toolResponseMessage = {
+         // Gemini doesn't use tool_call_id in history, but needs role: 'function'
+         // Let's adapt based on expected format from #formatMessagesForGemini
+         // It expects role: 'tool', name: ..., content: ...
          role: "tool",
          name: functionName,
          content: toolResultContent,
-       });
+       };
+       console.log("[chatSync] Appending tool response message to history:", JSON.stringify(toolResponseMessage));
+       messages.push(toolResponseMessage);
     }
 
     // Call LLM again with the tool results
-    console.log(`Re-invoking LLM after tool execution (Iteration ${toolCallIteration})`);
+    console.log(`[chatSync] Re-invoking LLM after tool execution (Iteration ${toolCallIteration})`);
     completionResult = await LLMConnector.getChatCompletion(messages, {
       temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
     });
+    console.log(`[chatSync] LLM response after iteration ${toolCallIteration}:`, completionResult ? Object.keys(completionResult) : "null"); // Log keys of the result
   }
+
+  console.log("[chatSync] Exited tool call loop.");
+  console.log("[chatSync] Final completionResult keys:", completionResult ? Object.keys(completionResult) : "null");
 
   if (toolCallIteration >= MAX_TOOL_CALL_ITERATIONS) {
     console.error("Maximum tool call iterations reached.");
