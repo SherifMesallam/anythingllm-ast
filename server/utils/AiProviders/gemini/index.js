@@ -511,22 +511,19 @@ class GeminiLLM {
     const functionCallPart = candidate.content?.parts?.find(part => part.functionCall);
     if (functionCallPart?.functionCall) {
       this.#log("Gemini responded with a function call.");
-      return {
-        functionCall: functionCallPart.functionCall, // Return the functionCall object
-        // We need the *assistant's response* containing the function call to add to history
-        // Gemini's `response` object might contain this structure, let's assume it does for now.
-        // The candidate.content object `{parts: [{functionCall: ...}], role: 'model'}` is likely what we need.
+      const resultToSend = {
+        functionCall: functionCallPart.functionCall,
         message: candidate.content,
         metrics: {
-          // Gemini API (REST) doesn't directly return token counts in the same way.
-          // Need to estimate or omit if not available via the SDK/method used.
           prompt_tokens: response.usageMetadata?.promptTokenCount || 0,
           completion_tokens: response.usageMetadata?.candidatesTokenCount || 0,
           total_tokens: response.usageMetadata?.totalTokenCount || 0,
-          outputTps: 0, // Cannot calculate without completion tokens / precise timing
+          outputTps: 0,
           duration: result.duration,
         },
       };
+      console.log("[GeminiLLM.getChatCompletion] Returning FUNCTION CALL object:", JSON.stringify(resultToSend, null, 2));
+      return resultToSend;
     }
 
     // Check for blocked response
@@ -547,16 +544,19 @@ class GeminiLLM {
       return null;
     }
 
-    return {
+    const resultToSend = {
       textResponse: textResponse,
+      message: candidate.content, // Assuming candidate.content holds the text part
       metrics: {
         prompt_tokens: response.usageMetadata?.promptTokenCount || 0,
-        completion_tokens: response.usageMetadata?.candidatesTokenCount || 0, // Or .completionTokenCount if available
+        completion_tokens: response.usageMetadata?.candidatesTokenCount || 0,
         total_tokens: response.usageMetadata?.totalTokenCount || 0,
         outputTps: (response.usageMetadata?.candidatesTokenCount || 0) / result.duration,
         duration: result.duration,
       },
     };
+    console.log("[GeminiLLM.getChatCompletion] Returning TEXT RESPONSE object:", JSON.stringify(resultToSend, null, 2));
+    return resultToSend;
   }
 
   #formatMessagesForGemini(messages) {
