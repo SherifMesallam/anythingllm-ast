@@ -32,6 +32,30 @@ const {
  * @property {object} metrics
  */
 
+function extractUserQuery(fullMessage) {
+  if (!fullMessage || typeof fullMessage !== 'string') return '';
+
+  // Attempt to find "User: " and extract text after it
+  const userPrefix = 'User: ';
+  const userPrefixIndex = fullMessage.indexOf(userPrefix);
+
+  if (userPrefixIndex !== -1) {
+    let query = fullMessage.substring(userPrefixIndex + userPrefix.length);
+
+    // Attempt to remove the "\n\nIMPORTANT:" part if it exists
+    const importantPrefix = '\n\nIMPORTANT:';
+    const importantPrefixIndex = query.indexOf(importantPrefix);
+    if (importantPrefixIndex !== -1) {
+      query = query.substring(0, importantPrefixIndex);
+    }
+    return query.trim(); // Return the trimmed query
+  }
+
+  // Fallback: If "User: " not found, return the original message trimmed
+  // (Consider if a more robust fallback is needed)
+  return fullMessage.trim();
+}
+
 /**
  * Handle synchronous chats with your workspace via the developer API endpoint
  * @param {{
@@ -58,6 +82,7 @@ async function chatSync({
 }) {
   const uuid = uuidv4();
   const chatMode = mode ?? "chat";
+  const rawUserMessage = message; // Keep original for saving later if needed
 
   // If the user wants to reset the chat history we do so pre-flight
   // and continue execution. If no message is provided then the user intended
@@ -84,7 +109,8 @@ async function chatSync({
 
   // Process slash commands
   // Since preset commands are not supported in API calls, we can just process the message here
-  const processedMessage = await grepAllSlashCommands(message);
+  const processedMessage = await grepAllSlashCommands(rawUserMessage);
+  const cleanUserQuery = extractUserQuery(processedMessage); // Extract the core query after slash commands
   message = processedMessage;
 
   if (EphemeralAgentHandler.isAgentInvocation({ message })) {
@@ -158,7 +184,7 @@ async function chatSync({
 
     await WorkspaceChats.new({
       workspaceId: workspace.id,
-      prompt: String(message),
+      prompt: rawUserMessage, // Save original
       response: {
         text: textResponse,
         sources: [],
@@ -286,7 +312,7 @@ async function chatSync({
 
     await WorkspaceChats.new({
       workspaceId: workspace.id,
-      prompt: message,
+      prompt: rawUserMessage, // Save original
       response: {
         text: textResponse,
         sources: [],
@@ -316,7 +342,7 @@ async function chatSync({
   const messages = await LLMConnector.compressMessages(
     {
       systemPrompt: await chatPrompt(workspace, user),
-      userPrompt: message,
+      userPrompt: cleanUserQuery, // Use cleaned query
       contextTexts,
       chatHistory,
       attachments,
@@ -468,7 +494,7 @@ async function chatSync({
 
   const { chat } = await WorkspaceChats.new({
     workspaceId: workspace.id,
-    prompt: message,
+    prompt: rawUserMessage, // Save original
     response: {
       text: textResponse,
       sources,
@@ -521,6 +547,7 @@ async function streamChat({
 }) {
   const uuid = uuidv4();
   const chatMode = mode ?? "chat";
+  const rawUserMessage = message; // Keep original for saving later if needed
 
   // If the user wants to reset the chat history we do so pre-flight
   // and continue execution. If no message is provided then the user intended
@@ -549,7 +576,8 @@ async function streamChat({
 
   // Check for and process slash commands
   // Since preset commands are not supported in API calls, we can just process the message here
-  const processedMessage = await grepAllSlashCommands(message);
+  const processedMessage = await grepAllSlashCommands(rawUserMessage);
+  const cleanUserQuery = extractUserQuery(processedMessage); // Extract the core query after slash commands
   message = processedMessage;
 
   if (EphemeralAgentHandler.isAgentInvocation({ message })) {
@@ -632,7 +660,7 @@ async function streamChat({
     });
     await WorkspaceChats.new({
       workspaceId: workspace.id,
-      prompt: message,
+      prompt: rawUserMessage, // Save original
       response: {
         text: textResponse,
         sources: [],
@@ -771,7 +799,7 @@ async function streamChat({
 
     await WorkspaceChats.new({
       workspaceId: workspace.id,
-      prompt: message,
+      prompt: rawUserMessage, // Save original
       response: {
         text: textResponse,
         sources: [],
@@ -792,7 +820,7 @@ async function streamChat({
   let messages = await LLMConnector.compressMessages(
     {
       systemPrompt: await chatPrompt(workspace, user),
-      userPrompt: message,
+      userPrompt: cleanUserQuery, // Use cleaned query
       contextTexts,
       chatHistory,
       attachments,
@@ -1024,7 +1052,7 @@ async function streamChat({
     console.log("Saving final streamed response to database.")
     const { chat } = await WorkspaceChats.new({
       workspaceId: workspace.id,
-      prompt: message, // Original user prompt for this exchange
+      prompt: rawUserMessage, // Save original
       response: {
         text: completeText,
         sources, // Use sources gathered initially
