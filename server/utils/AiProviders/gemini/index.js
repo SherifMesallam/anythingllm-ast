@@ -567,7 +567,8 @@ class GeminiLLM {
       // Handle System Prompt based on model support
       if (message.role === 'system') {
          if (this.supportsSystemPrompt) {
-            systemInstruction = { role: 'system', content: message.content };
+            // Format according to Content object structure: { parts: [{ text: ... }] }
+            systemInstruction = { parts: [{ text: message.content }] };
          } else {
             // Prepend system prompt to the first user message if not supported natively
             const firstUserIndex = messages.findIndex(m => m.role === 'user');
