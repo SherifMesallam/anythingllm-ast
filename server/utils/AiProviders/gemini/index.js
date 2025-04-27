@@ -480,9 +480,6 @@ class GeminiLLM {
 
     this.#log(`Sending request to Gemini model ${this.model}...`);
     const requestOptions = { tools: toolsForApi };
-    this.#log("Gemini Chat Request Options:", JSON.stringify(requestOptions, null, 2));
-    this.#log("Gemini Chat History Being Sent:", JSON.stringify(geminiHistory, null, 2));
-    this.#log("Gemini Chat Last User Content:", JSON.stringify(lastUserContent, null, 2));
 
     const result = await LLMPerformanceMonitor.measureAsyncFunction(
        chat.sendMessage(lastUserContent, requestOptions)
@@ -679,7 +676,6 @@ class GeminiLLM {
         contents: [...geminiHistory, { role: 'user', parts: [{ text: lastUserContent }] }],
         tools: toolsForApi,
     };
-    this.#log("Gemini Stream Request Options:", JSON.stringify(streamOptions, null, 2));
 
     // Note: PerformanceMonitor needs adaptation for streams that yield multiple types (text, functionCall)
     // Call generateContentStream and await the initial response object containing stream and response promise
