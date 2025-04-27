@@ -379,7 +379,7 @@ class GeminiLLM {
    * @returns {Promise<boolean>} A promise that resolves to a boolean indicating if the model is valid
    */
   async isValidChatCompletionModel(modelName = "") {
-    const models = await this.fetchModels(process.env.GEMINI_API_KEY);
+    const models = await GeminiLLM.fetchModels(process.env.GEMINI_API_KEY);
     return models.some((model) => model.id === modelName);
   }
 
