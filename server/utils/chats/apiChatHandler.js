@@ -14,6 +14,12 @@ const {
   EphemeralEventListener,
 } = require("../agents/ephemeral");
 const { Telemetry } = require("../../models/telemetry");
+const { safeJsonParse } = require("../http");
+const {
+  executeAskUserTool,
+  executeSearchDocumentsTool,
+  executeGetFileContentTool,
+} = require("./toolExecutor");
 
 /**
  * @typedef ResponseObject
@@ -321,13 +327,134 @@ async function chatSync({
   // Log the complete request before sending to LLM
   console.log("LLM Request (sync):", JSON.stringify(messages, null, 2));
 
-  // Send the text completion.
-  const { textResponse, metrics: performanceMetrics } =
-    await LLMConnector.getChatCompletion(messages, {
+  let completionResult;
+  let toolCallIteration = 0;
+  const MAX_TOOL_CALL_ITERATIONS = 5;
+
+  // Initial LLM call
+  completionResult = await LLMConnector.getChatCompletion(messages, {
+    temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
+  });
+
+  // Loop while the LLM wants to call tools
+  while (
+    (completionResult?.toolCalls || completionResult?.functionCall) &&
+    toolCallIteration < MAX_TOOL_CALL_ITERATIONS
+  ) {
+    toolCallIteration++;
+    const toolCalls = completionResult.toolCalls;
+    const functionCall = completionResult.functionCall;
+
+    // Append the assistant's message with tool calls/function call to the history
+    if (completionResult.message) {
+      messages.push(completionResult.message);
+    } else {
+      console.error("Assistant message object not found in completionResult");
+      messages.push({ role: "assistant", content: null, tool_calls: toolCalls, functionCall: functionCall });
+    }
+
+    // Process either OpenAI toolCalls or Gemini functionCall
+    if (toolCalls) {
+      // --- OpenAI Tool Call Processing --- //
+      for (const toolCall of toolCalls) {
+        const functionName = toolCall.function.name;
+        const functionArgs = safeJsonParse(toolCall.function.arguments || '{}');
+        let toolResultContent = "";
+
+        console.log(
+          `Iteration ${toolCallIteration}: Executing OpenAI tool ${functionName} with args:`, functionArgs
+        );
+
+        if (functionName === "ask_user_for_clarification") {
+           const clarificationResponse = executeAskUserTool(functionArgs, uuid, null, false, null);
+           if (clarificationResponse) return clarificationResponse;
+           toolResultContent = "Error processing clarification request.";
+        } else if (functionName === "search_documents") {
+          toolResultContent = await executeSearchDocumentsTool(functionArgs, workspace, LLMConnector);
+        } else if (functionName === "get_file_content") {
+          toolResultContent = await executeGetFileContentTool(functionArgs);
+        } else {
+          console.warn(`Unsupported OpenAI tool function: ${functionName}`);
+          toolResultContent = `Tool function ${functionName} is not supported.`;
+        }
+
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          name: functionName,
+          content: toolResultContent,
+        });
+      }
+    } else if (functionCall) {
+       // --- Gemini Function Call Processing --- //
+       const functionName = functionCall.name;
+       const functionArgs = functionCall.args;
+       let toolResultContent = "";
+
+       console.log(
+         `Iteration ${toolCallIteration}: Executing Gemini function ${functionName} with args:`, functionArgs
+       );
+
+       if (functionName === "ask_user_for_clarification") {
+          const clarificationResponse = executeAskUserTool(functionArgs, uuid, null, false, null);
+          if (clarificationResponse) return clarificationResponse;
+          toolResultContent = "Error processing clarification request.";
+       } else if (functionName === "search_documents") {
+          toolResultContent = await executeSearchDocumentsTool(functionArgs, workspace, LLMConnector);
+       } else if (functionName === "get_file_content") {
+          toolResultContent = await executeGetFileContentTool(functionArgs);
+       } else {
+         console.warn(`Unsupported Gemini function: ${functionName}`);
+         toolResultContent = `Function ${functionName} is not supported.`;
+       }
+
+       messages.push({
+         role: "tool",
+         name: functionName,
+         content: toolResultContent,
+       });
+    }
+
+    // Call LLM again with the tool results
+    console.log(`Re-invoking LLM after tool execution (Iteration ${toolCallIteration})`);
+    completionResult = await LLMConnector.getChatCompletion(messages, {
       temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
     });
+  }
+
+  if (toolCallIteration >= MAX_TOOL_CALL_ITERATIONS) {
+    console.error("Maximum tool call iterations reached.");
+    return {
+      id: uuid,
+      type: "abort",
+      textResponse: null,
+      sources: [],
+      close: true,
+      error: "Failed to get response after maximum tool call iterations.",
+      metrics: completionResult?.metrics || {},
+    };
+  }
+
+  // Check if the final result is still a tool call (shouldn't happen ideally, but handle defensively)
+  if (completionResult?.toolCalls || completionResult?.functionCall) {
+     console.error("LLM responded with tool/function calls after loop finished.");
+     return {
+      id: uuid,
+      type: "abort",
+      textResponse: null,
+      sources: [],
+      close: true,
+      error: "LLM failed to provide a final text response after tool execution.",
+      metrics: completionResult.metrics || {},
+    };
+  }
+
+  // Extract final response
+  const textResponse = completionResult?.textResponse;
+  const performanceMetrics = completionResult?.metrics;
 
   if (!textResponse) {
+    console.error("No textResponse found in the final completion result.");
     return {
       id: uuid,
       type: "abort",
@@ -524,7 +651,7 @@ async function streamChat({
   // If we are here we know that we are in a workspace that is:
   // 1. Chatting in "chat" mode and may or may _not_ have embeddings
   // 2. Chatting in "query" mode and has at least 1 embedding
-  let completeText;
+  let completeText = "";
   let metrics = {};
   let contextTexts = [];
   let sources = [];
@@ -662,7 +789,7 @@ async function streamChat({
 
   // Compress & Assemble message to ensure prompt passes token limit with room for response
   // and build system messages based on inputs and history.
-  const messages = await LLMConnector.compressMessages(
+  let messages = await LLMConnector.compressMessages(
     {
       systemPrompt: await chatPrompt(workspace, user),
       userPrompt: message,
@@ -673,73 +800,256 @@ async function streamChat({
     rawHistory
   );
 
-  // Log the complete request before sending to LLM
+  // Log the initial request
   console.log("LLM Request (stream):", JSON.stringify(messages, null, 2));
 
-  // If streaming is not explicitly enabled for connector
-  // we do regular waiting of a response and send a single chunk.
-  if (LLMConnector.streamingEnabled() !== true) {
-    console.log(
-      `\x1b[31m[STREAMING DISABLED]\x1b[0m Streaming is not available for ${LLMConnector.constructor.name}. Will use regular chat method.`
-    );
-    const { textResponse, metrics: performanceMetrics } =
-      await LLMConnector.getChatCompletion(messages, {
-        temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
-      });
-    completeText = textResponse;
-    metrics = performanceMetrics;
-    writeResponseChunk(response, {
-      uuid,
-      sources,
-      type: "textResponseChunk",
-      textResponse: completeText,
-      close: true,
-      error: false,
-      metrics,
-    });
-  } else {
-    const stream = await LLMConnector.streamGetChatCompletion(messages, {
+  let toolCallIteration = 0;
+  const MAX_TOOL_CALL_ITERATIONS = 5;
+  let currentToolCall = null; // Store the tool call received from the stream
+  let finalMetrics = {};
+  let finalChatId = null;
+
+  // --- Streaming Tool Call Loop --- //
+  const startTime = Date.now(); // Start timing before the loop
+  while (toolCallIteration < MAX_TOOL_CALL_ITERATIONS) {
+    currentToolCall = null; // Reset tool call for this iteration
+    let streamEnded = false;
+
+    if (LLMConnector.streamingEnabled() !== true) {
+      console.log(
+        `\x1b[31m[STREAMING DISABLED][0m Streaming is not available for ${LLMConnector.constructor.name}. Cannot use tools in stream mode.`
+      );
+      // Attempt to get a sync response instead? Or just abort?
+      // For now, aborting stream if tools might be needed but streaming isn't supported.
+      writeResponseChunk(response, {
+          uuid,
+          type: "abort",
+          textResponse: null,
+          sources: [],
+          close: true,
+          error: `Streaming is disabled for ${LLMConnector.constructor.name}, cannot process potential tool calls.`,
+          metrics: {},
+        });
+      return;
+    }
+
+    console.log(`Starting LLM stream request (Iteration ${toolCallIteration + 1})`);
+    const streamResult = await LLMConnector.streamGetChatCompletion(messages, {
       temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
     });
-    completeText = await LLMConnector.handleStream(response, stream, {
+
+    // handleStream now returns a generator
+    const streamGenerator = LLMConnector.handleStream(response, streamResult, {
       uuid,
       sources,
     });
-    metrics = stream.metrics;
+
+    // Process the stream chunks from the generator
+    let accumulatedTextForThisIteration = "";
+    let finalMetrics = {}; // Initialize finalMetrics here for safety
+
+    try {
+      for await (const chunk of streamGenerator) {
+        if (chunk.type === "textResponseChunk") {
+          writeResponseChunk(response, chunk); // Stream text chunk to client
+          accumulatedTextForThisIteration += chunk.textResponse;
+        } else if (chunk.type === "tool_call_chunk") {
+          console.log("Tool call chunk received from stream handler");
+          currentToolCall = chunk.toolCall; // Store the tool call info
+          // Metrics are now handled by finalizeStreamMetrics chunk
+          streamEnded = true; // Signal that main generation is done, tool call pending
+          break; // Exit stream processing to handle the tool call
+        } else if (chunk.type === "finalizeTextStream") {
+          console.log("Finalize text stream chunk received");
+          completeText = chunk.fullText || accumulatedTextForThisIteration; // Assign to outer variable
+          // Metrics are now handled by finalizeStreamMetrics chunk
+          streamEnded = true; // Signal that main generation is done
+          break; // Exit stream processing, text response is complete
+        } else if (chunk.type === "finalizeStreamMetrics") {
+          console.log("Finalize stream metrics chunk received");
+          if (chunk.metrics) {
+             finalMetrics = chunk.metrics;
+             console.log("Metrics extracted from finalizeStreamMetrics chunk:", finalMetrics);
+          }
+          // Note: This chunk does NOT end the stream processing loop itself.
+          // The loop continues until a break from tool_call or finalizeTextStream, or an abort.
+        } else if (chunk.type === "abort") {
+          console.error("Abort chunk received from stream handler:", chunk.error);
+          writeResponseChunk(response, { ...chunk, close: true }); // Send abort to client
+          return; // Stop the entire streamChat process
+        }
+      }
+    } catch (streamError) {
+      console.error("Error iterating stream generator:", streamError);
+      writeResponseChunk(response, {
+        uuid,
+        type: "abort",
+        sources: [],
+        close: true,
+        error: `Stream processing error: ${streamError.message}`,
+        metrics: {},
+      });
+      return;
+    }
+
+    // --- Tool Execution Logic (If a tool call was received) --- //
+    if (currentToolCall) {
+      toolCallIteration++;
+
+      // Determine structure based on provider (checking presence of toolCalls vs functionCall in the chunk)
+      let toolCallId, functionName, functionArgsString, functionArgs, assistantMessageForHistory;
+      if (currentToolCall.toolCalls && currentToolCall.assistantMessage) { // OpenAI structure from chunk
+         // Assuming toolCalls is an array, process the first one? Or handle multiple?
+         // For simplicity, let's assume the LLM calls one tool at a time for now.
+         if (currentToolCall.toolCalls.length > 1) {
+            console.warn("Multiple tool calls in one streaming response not fully handled yet. Processing first call.");
+         }
+         const firstToolCall = currentToolCall.toolCalls[0];
+         toolCallId = firstToolCall.id;
+         functionName = firstToolCall.function.name;
+         functionArgsString = firstToolCall.function.arguments;
+         assistantMessageForHistory = currentToolCall.assistantMessage; // Use the message from the chunk
+      } else if (currentToolCall.toolCall) { // Gemini structure from chunk
+         // The chunk structure was defined as { type: "tool_call_chunk", toolCall: { id: ..., function: { name: ..., arguments: ... } } }
+         const geminiToolCall = currentToolCall.toolCall;
+         toolCallId = geminiToolCall.id; // Use the generated ID
+         functionName = geminiToolCall.function.name;
+         functionArgsString = geminiToolCall.function.arguments;
+         functionArgs = safeJsonParse(functionArgsString || '{}'); // Parse here for Gemini reconstruction
+         // Reconstruct Gemini assistant message for history
+         assistantMessageForHistory = {
+             role: 'model',
+             parts: [{ functionCall: { name: functionName, args: functionArgs } }],
+         };
+      } else {
+         console.error("Invalid tool_call_chunk structure received:", currentToolCall);
+         // Handle error - maybe abort?
+         continue; // Skip this iteration
+      }
+
+      // Parse arguments if not already parsed (mainly for OpenAI)
+      if (!functionArgs) {
+         functionArgs = safeJsonParse(functionArgsString || '{}');
+      }
+      let toolResultContent = "";
+
+      // Append the *correct* assistant message to history BEFORE executing tool
+      if (assistantMessageForHistory) {
+          messages.push(assistantMessageForHistory);
+      } else {
+          // This shouldn't happen if providers yield the message correctly
+          console.error("Could not determine assistant message for tool call history!");
+          // Construct a very basic placeholder - this might break subsequent calls
+          messages.push({ role: "assistant", content: `[Placeholder: requesting tool ${functionName}]` });
+      }
+
+      console.log(
+        `Iteration ${toolCallIteration}: Executing streamed tool ${functionName} with args:`, functionArgs
+      );
+
+       if (functionName === "ask_user_for_clarification") {
+         // Executor handles writing chunk and returns null to signal stop
+         executeAskUserTool(functionArgs, uuid, response, true, writeResponseChunk);
+         return; // Stop processing the stream
+       } else if (functionName === "search_documents") {
+          toolResultContent = await executeSearchDocumentsTool(functionArgs, workspace, LLMConnector);
+       } else if (functionName === "get_file_content") {
+          toolResultContent = await executeGetFileContentTool(functionArgs);
+       } else {
+         console.warn(`Unsupported tool function: ${functionName}`);
+         toolResultContent = `Tool function ${functionName} is not supported.`;
+       }
+
+      // Append the tool result message (using standard 'tool' role)
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCallId, // Use the ID from the tool call
+        name: functionName,
+        content: toolResultContent,
+      });
+
+      // Continue to the next iteration of the while loop to call LLM again
+      console.log("Continuing stream loop after tool execution...")
+
+    } else if (streamEnded) {
+      // Stream finished with text, break the loop
+      console.log("Stream ended with text response.")
+      // finalMetrics = ??? // Need metrics from finalizeTextStream chunk if available
+      break;
+    } else {
+       // Should not happen if generator always yields finalize or abort
+       console.error("Stream generator finished without finalizeTextStream or tool_call_chunk");
+       writeResponseChunk(response, {
+          uuid,
+          type: "abort",
+          error: "Stream ended unexpectedly.",
+          close: true,
+       });
+       return;
+    }
+  } // --- End of Streaming Tool Call Loop --- //
+
+  const endTime = Date.now(); // End timing after the loop
+  const duration = (endTime - startTime) / 1000; // Duration in seconds
+
+  // Add duration and potentially TPS to metrics
+  if (finalMetrics) {
+    finalMetrics.duration = duration;
+    if (finalMetrics.completionTokenCount && duration > 0) {
+       finalMetrics.outputTps = finalMetrics.completionTokenCount / duration;
+    } else {
+       finalMetrics.outputTps = 0;
+    }
+    console.log("Final metrics including duration:", finalMetrics);
   }
 
+  // Handle Max Iterations Reached
+  if (toolCallIteration >= MAX_TOOL_CALL_ITERATIONS) {
+    console.error("Maximum tool call iterations reached in stream.");
+    writeResponseChunk(response, {
+      uuid,
+      type: "abort",
+      textResponse: null,
+      sources: [],
+      close: true,
+      error: "Failed to get response after maximum tool call iterations.",
+      metrics: finalMetrics || {},
+    });
+    return;
+  }
+
+   // --- Finalization --- //
+   // If loop finished normally (via break after finalizeTextStream)
   if (completeText?.length > 0) {
+    console.log("Saving final streamed response to database.")
     const { chat } = await WorkspaceChats.new({
       workspaceId: workspace.id,
-      prompt: message,
+      prompt: message, // Original user prompt for this exchange
       response: {
         text: completeText,
-        sources,
+        sources, // Use sources gathered initially
         type: chatMode,
-        metrics,
+        metrics: finalMetrics, // Use metrics gathered
         attachments,
       },
       threadId: thread?.id || null,
       apiSessionId: sessionId,
       user,
     });
-
-    writeResponseChunk(response, {
-      uuid,
-      type: "finalizeResponseStream",
-      close: true,
-      error: false,
-      chatId: chat.id,
-      metrics,
-    });
-    return;
+    finalChatId = chat.id;
+  } else if (!currentToolCall) {
+     // Stream ended, but no text and no pending tool call (e.g., LLM just stopped)
+     console.warn("Stream ended without generating text or calling a tool.")
   }
 
+  console.log("Finalizing stream response.")
   writeResponseChunk(response, {
     uuid,
     type: "finalizeResponseStream",
+    chatId: finalChatId,
     close: true,
     error: false,
+    metrics: finalMetrics,
   });
   return;
 }

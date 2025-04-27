@@ -11,11 +11,73 @@ const {
 const { MODEL_MAP } = require("../modelMap");
 const { defaultGeminiModels, v1BetaModels } = require("./defaultModels");
 const { safeJsonParse } = require("../../http");
+const { formatToolsForGemini } = require("../../llm/tools");
 const cacheFolder = path.resolve(
   process.env.STORAGE_DIR
     ? path.resolve(process.env.STORAGE_DIR, "models", "gemini")
     : path.resolve(__dirname, `../../../storage/models/gemini`)
 );
+
+// Import necessary components from Google Generative AI SDK
+const {
+  GoogleGenerativeAI,
+  HarmCategory,
+  HarmBlockThreshold,
+} = require("@google/generative-ai");
+
+// Define tools using FunctionDeclaration schema
+const tools = [
+  {
+    functionDeclarations: [
+      {
+        name: "ask_user_for_clarification",
+        description: "Ask the user a clarifying question when the request or context is ambiguous.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            question_for_user: {
+              type: "STRING",
+              description: "The specific question to ask the user.",
+            },
+          },
+          required: ["question_for_user"],
+        },
+      },
+      {
+        name: "search_documents",
+        description: "Search the available documents for more information relevant to a specific query. Use context chunks like [CONTEXT 0]...[END CONTEXT 0] to understand the available information first.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            search_query: {
+              type: "STRING",
+              description: "The specific query to search for in the documents.",
+            },
+          },
+          required: ["search_query"],
+        },
+      },
+      {
+        name: "get_file_content",
+        description: "Retrieves the content of a specific file from a GitHub repository.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            repository: {
+              type: "STRING",
+              description: "The GitHub repository in 'owner/repo' format.",
+            },
+            file_path: {
+              type: "STRING",
+              description: "The full path to the file within the repository.",
+            },
+          },
+          required: ["repository", "file_path"],
+        },
+      },
+    ],
+  },
+];
 
 const NO_SYSTEM_PROMPT_MODELS = [
   "gemma-3-1b-it",
@@ -58,6 +120,15 @@ class GeminiLLM {
     this.#log(
       `Initialized with model: ${this.model} ${isExperimental ? "[Experimental v1beta]" : "[Stable v1]"} - ctx: ${this.promptWindowLimit()}`
     );
+
+    // Initialize GoogleGenerativeAI
+    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  }
+
+  static supportsTools() {
+    // Most recent Gemini models support function calling
+    // We could add model-specific checks later if needed
+    return true;
   }
 
   /**
@@ -378,54 +449,250 @@ class GeminiLLM {
   }
 
   async getChatCompletion(messages = null, { temperature = 0.7 }) {
+    if (!(await this.isValidChatCompletionModel(this.model)))
+      throw new Error(
+        `Gemini chat: ${this.model} is not valid for chat completion!`
+      );
+
+    // Convert message history to Gemini format (alternating user/model roles)
+    // And handle system prompt based on model support
+    const { history: geminiHistory, systemInstruction } = this.#formatMessagesForGemini(messages);
+
+    // Define tools using formatter for this call
+    const toolsForApi = formatToolsForGemini();
+
+    // Prepare model instance with potential system instruction for this call
+    const modelInstance = this.genAI.getGenerativeModel({
+      model: this.model,
+      ...(systemInstruction && { systemInstruction: systemInstruction.content }), // Add system instruction if exists
+    });
+
+    const chat = modelInstance.startChat({
+      history: geminiHistory,
+    });
+
+    // Get the last user message content
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage.role !== 'user') {
+       throw new Error("Last message in history must be from user for Gemini chat.");
+    }
+    const lastUserContent = lastMessage.content; // Assuming content is string or compatible format
+
+    this.#log(`Sending request to Gemini model ${this.model}...`);
     const result = await LLMPerformanceMonitor.measureAsyncFunction(
-      this.openai.chat.completions
-        .create({
-          model: this.model,
-          messages,
-          temperature: temperature,
-        })
-        .catch((e) => {
-          console.error(e);
-          throw new Error(e.message);
-        })
+       chat.sendMessage(lastUserContent, { tools: toolsForApi }) // Pass formatted tools here
+      .catch((e) => {
+         console.error("Gemini API Error:", e);
+         throw new Error(
+          `Gemini::getChatCompletion failed. ${e.message || "Unknown error"}`
+        );
+      })
     );
 
-    if (
-      !result.output.hasOwnProperty("choices") ||
-      result.output.choices.length === 0
-    )
+    const response = result.output?.response;
+    if (!response) {
+      console.error("Gemini response was empty or invalid.");
       return null;
+    }
+
+    const candidate = response.candidates?.[0];
+    if (!candidate) {
+      console.error("No candidates found in Gemini response.", response);
+       // Check for blocked prompt
+       if (response.promptFeedback?.blockReason) {
+         throw new Error(`Gemini prompt blocked: ${response.promptFeedback.blockReason}`);
+       }
+      return null;
+    }
+
+    // Check for function call
+    const functionCallPart = candidate.content?.parts?.find(part => part.functionCall);
+    if (functionCallPart?.functionCall) {
+      this.#log("Gemini responded with a function call.");
+      return {
+        functionCall: functionCallPart.functionCall, // Return the functionCall object
+        // We need the *assistant's response* containing the function call to add to history
+        // Gemini's `response` object might contain this structure, let's assume it does for now.
+        // The candidate.content object `{parts: [{functionCall: ...}], role: 'model'}` is likely what we need.
+        message: candidate.content,
+        metrics: {
+          // Gemini API (REST) doesn't directly return token counts in the same way.
+          // Need to estimate or omit if not available via the SDK/method used.
+          prompt_tokens: response.usageMetadata?.promptTokenCount || 0,
+          completion_tokens: response.usageMetadata?.candidatesTokenCount || 0,
+          total_tokens: response.usageMetadata?.totalTokenCount || 0,
+          outputTps: 0, // Cannot calculate without completion tokens / precise timing
+          duration: result.duration,
+        },
+      };
+    }
+
+    // Check for blocked response
+    if (candidate.finishReason === 'SAFETY') {
+       console.error("Gemini response blocked due to safety settings.", candidate.safetyRatings);
+       throw new Error(`Gemini response blocked due to safety settings: ${candidate.safetyRatings?.map(r => r.category).join(', ')}`);
+    }
+    if (candidate.finishReason === 'RECITATION') {
+       console.error("Gemini response blocked due to recitation.", candidate.citationMetadata);
+       throw new Error("Gemini response blocked due to recitation.");
+    }
+
+    // If no function call and not blocked, return text response
+    const textResponse = response.text ? response.text() : null; // Use text() helper
+
+    if (!textResponse) {
+      console.error("No text content found in Gemini response candidate.", candidate);
+      return null;
+    }
 
     return {
-      textResponse: result.output.choices[0].message.content,
+      textResponse: textResponse,
       metrics: {
-        prompt_tokens: result.output.usage.prompt_tokens || 0,
-        completion_tokens: result.output.usage.completion_tokens || 0,
-        total_tokens: result.output.usage.total_tokens || 0,
-        outputTps: result.output.usage.completion_tokens / result.duration,
+        prompt_tokens: response.usageMetadata?.promptTokenCount || 0,
+        completion_tokens: response.usageMetadata?.candidatesTokenCount || 0, // Or .completionTokenCount if available
+        total_tokens: response.usageMetadata?.totalTokenCount || 0,
+        outputTps: (response.usageMetadata?.candidatesTokenCount || 0) / result.duration,
         duration: result.duration,
       },
     };
   }
 
-  async streamGetChatCompletion(messages = null, { temperature = 0.7 }) {
-    const measuredStreamRequest = await LLMPerformanceMonitor.measureStream(
-      this.openai.chat.completions.create({
-        model: this.model,
-        stream: true,
-        messages,
-        temperature: temperature,
-      }),
-      messages,
-      true
-    );
+  #formatMessagesForGemini(messages) {
+    const history = [];
+    let systemInstruction = null;
+    let currentRole = null;
+    let currentParts = [];
 
-    return measuredStreamRequest;
+    for (const message of messages) {
+      // Handle System Prompt based on model support
+      if (message.role === 'system') {
+         if (this.supportsSystemPrompt) {
+            systemInstruction = { role: 'system', content: message.content };
+         } else {
+            // Prepend system prompt to the first user message if not supported natively
+            const firstUserIndex = messages.findIndex(m => m.role === 'user');
+            if (firstUserIndex !== -1 && messages[firstUserIndex] === message) {
+              messages[firstUserIndex].content = message.content + "\n\n" + messages[firstUserIndex].content;
+            }
+         }
+         continue; // Skip adding system message to history array
+      }
+
+      // Gemini requires alternating user/model roles.
+      // Combine consecutive messages of the same role if necessary (e.g., tool results)
+      const role = message.role === 'assistant' || message.role === 'model' ? 'model' : 'user';
+
+      // Handle tool calls (which come from 'assistant'/'model' role)
+      if (message.tool_calls || message.functionCall) {
+        // If previous message was also model, append parts, otherwise start new entry
+        if (currentRole === 'model') {
+          currentParts.push({ functionCall: message.functionCall || message.tool_calls[0].function }); // Adapt based on actual structure
+        } else {
+           if(currentRole) history.push({ role: currentRole, parts: currentParts }); // Push previous role first
+           currentRole = 'model';
+           currentParts = [{ functionCall: message.functionCall || message.tool_calls[0].function }]; // Adapt
+        }
+        continue;
+      }
+
+      // Handle tool results (which come from 'tool' role) -> map to functionResponse part
+      if (message.role === 'tool') {
+         // Tool results MUST follow a functionCall from the 'model'
+         if (currentRole !== 'model' || !currentParts.some(p => p.functionCall)) {
+            console.warn("Tool message received without preceding function call. Skipping.");
+            continue;
+         }
+         currentParts.push({
+           functionResponse: {
+             name: message.name, // name comes from the tool message
+             response: { content: message.content }, // Content needs to be nested
+           }
+         });
+         // Do not switch role here, tool response is part of the 'model' turn
+         continue;
+      }
+
+      // Regular text content
+      const textContent = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+
+      if (role === currentRole) {
+        // Same role as previous message, combine content
+        currentParts.push({ text: textContent });
+      } else {
+        // Different role, push previous message block and start new one
+        if (currentRole) {
+          history.push({ role: currentRole, parts: currentParts });
+        }
+        currentRole = role;
+        currentParts = [{ text: textContent }];
+      }
+    }
+
+    // Push the last message block
+    if (currentRole) {
+      history.push({ role: currentRole, parts: currentParts });
+    }
+
+    // Ensure history ends with a user message for the actual chat.sendMessage call later
+    // The actual last user message is handled separately by chat.sendMessage
+    const lastUserMessageIndex = history.findIndex((item, index) => index === history.length -1 && item.role === 'user');
+    if(lastUserMessageIndex !== -1) history.pop();
+
+    return { history, systemInstruction };
   }
 
-  handleStream(response, stream, responseProps) {
-    return handleDefaultStreamResponseV2(response, stream, responseProps);
+  async streamGetChatCompletion(messages = null, { temperature = 0.7 }) {
+    if (!(await this.isValidChatCompletionModel(this.model)))
+      throw new Error(
+        `Gemini chat: ${this.model} is not valid for chat completion!`
+      );
+
+     // Convert message history to Gemini format (alternating user/model roles)
+    // And handle system prompt based on model support
+    const { history: geminiHistory, systemInstruction } = this.#formatMessagesForGemini(messages);
+
+    // Define tools using formatter for this call
+    const toolsForApi = formatToolsForGemini();
+
+    // Prepare model instance with potential system instruction for this call
+    const modelInstance = this.genAI.getGenerativeModel({
+      model: this.model,
+      ...(systemInstruction && { systemInstruction: systemInstruction.content }), // Add system instruction if exists
+    });
+
+    // Get the last user message content
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage.role !== 'user') {
+       throw new Error("Last message in history must be from user for Gemini stream.");
+    }
+    const lastUserContent = lastMessage.content; // Assuming content is string or compatible format
+
+    this.#log(`Streaming request to Gemini model ${this.model}...`);
+
+    // Note: PerformanceMonitor needs adaptation for streams that yield multiple types (text, functionCall)
+    // Call generateContentStream and await the initial response object containing stream and response promise
+    const streamingResult = await modelInstance.generateContentStream({
+        contents: [...geminiHistory, { role: 'user', parts: [{ text: lastUserContent }] }],
+        tools: toolsForApi, // Pass formatted tools here
+      }).catch((e) => {
+         console.error("Gemini API Stream Error:", e);
+         throw new Error(
+          `Gemini::streamGetChatCompletion failed. ${e.message || "Unknown error"}`
+        );
+      });
+
+    // Return the entire streaming result object, which includes both the
+    // async iterator (`stream`) and a promise for the final aggregated response (`response`)
+    return streamingResult;
+  }
+
+  // Modify handleStream to expect the full streamingResult object
+  handleStream(response, streamResult, responseProps) {
+     // Extract the stream iterator and the response promise
+     const { stream, response: responsePromise } = streamResult;
+
+     // Pass both stream and responsePromise to the generator
+     return handleGeminiStreamResponseV2Generator(stream, responsePromise, responseProps);
   }
 
   async compressMessages(promptArgs = {}, rawHistory = []) {
@@ -440,6 +707,164 @@ class GeminiLLM {
   }
   async embedChunks(textChunks = []) {
     return await this.embedder.embedChunks(textChunks);
+  }
+}
+
+// Update handleGeminiStreamResponseV2Generator to accept responsePromise and handle metrics
+async function* handleGeminiStreamResponseV2Generator(stream, responsePromise, responseProps) {
+  let fullText = "";
+  let functionCallName = null;
+  let functionCallArgs = "";
+  let toolCallId = uuidv4(); // Generate a unique ID for the potential tool call
+  let usageMetadata = null; // To store usage metadata
+
+  try {
+    for await (const chunk of stream) {
+      // Check for safety ratings or blocks early
+      if (chunk.promptFeedback?.blockReason) {
+         console.error("Gemini stream prompt blocked:", chunk.promptFeedback.blockReason);
+         // Yield an error chunk instead of writing directly
+         yield {
+           ...responseProps, // Include base props like uuid
+           type: "abort",
+           error: `Stream prompt blocked: ${chunk.promptFeedback.blockReason}`         };
+         return; // Stop generation
+      }
+      const candidate = chunk.candidates?.[0];
+      if (candidate?.finishReason === 'SAFETY') {
+        console.error("Gemini stream response blocked due to safety.", candidate.safetyRatings);
+        yield {
+           ...responseProps,
+           type: "abort",
+           error: "Stream response blocked due to safety settings.",
+         };
+        return;
+      }
+       if (candidate?.finishReason === 'RECITATION') {
+        console.error("Gemini stream response blocked due to recitation.", candidate.citationMetadata);
+        yield {
+           ...responseProps,
+           type: "abort",
+           error: "Stream response blocked due to recitation.",
+         };
+        return;
+      }
+
+      const functionCallChunk = candidate?.content?.parts?.find(part => part.functionCall);
+      if (functionCallChunk?.functionCall) {
+         // Aggregate function call parts
+         if(functionCallChunk.functionCall.name) {
+           functionCallName = functionCallChunk.functionCall.name;
+         }
+         // Gemini SDK provides args as object directly, aggregate carefully if chunked
+         // Assuming for now args come in one chunk or SDK handles aggregation.
+         // If args can be chunked, this aggregation needs refinement.
+         if(functionCallChunk.functionCall.args) {
+           // Attempt to merge args if received partially (simple merge, might need deeper logic)
+           const currentArgs = safeJsonParse(functionCallArgs || '{}');
+           functionCallArgs = JSON.stringify({ ...currentArgs, ...functionCallChunk.functionCall.args });
+         }
+      } else {
+        // Process text chunk
+        const textChunk = chunk.text ? chunk.text() : null; // Use text() method to get text
+        if (textChunk !== null && textChunk !== undefined) { // Ensure textChunk is not null/undefined
+          fullText += textChunk;
+          // Yield a text chunk
+          yield {
+            ...responseProps,
+            type: "textResponseChunk",
+            textResponse: textChunk,
+          };
+        }
+      }
+    } // End of stream loop
+
+    // After stream finishes, resolve the response promise to get final data like usageMetadata
+    try {
+      const finalResponse = await responsePromise;
+      usageMetadata = finalResponse.usageMetadata;
+      // Log the received usage metadata
+      console.log("Gemini final response metadata:", JSON.stringify(usageMetadata || {}, null, 2));
+    } catch (error) {
+      console.error("Error awaiting Gemini final response:", error);
+      // Decide if we should abort or just proceed without metrics
+      // For now, let's log and continue, yielding metrics as null
+    }
+
+
+    // Check if a function call was received
+    if (functionCallName) {
+        console.log(`Gemini stream finished with function call: ${functionCallName}`);
+        try {
+           const parsedArgs = JSON.parse(functionCallArgs || '{}'); // Parse aggregated args string
+           // Yield a tool call chunk
+           yield {
+             ...responseProps,
+             type: "tool_call_chunk",
+             toolCall: {
+                id: toolCallId,
+                function: {
+                  name: functionCallName,
+                  arguments: JSON.stringify(parsedArgs), // Send arguments as string
+                },
+             },
+             // Include usageMetadata here if available
+             usageMetadata: usageMetadata || null,
+           };
+           // Generator finishes, signaling the calling function to handle the tool call
+         } catch (e) {
+            console.error("Error parsing function call arguments from stream:", e);
+            yield {
+              ...responseProps,
+              type: "abort",
+              error: "Failed to parse tool call arguments.",
+            };
+         }
+    } else {
+       // If no function call, yield a finalize chunk containing the full text and metrics
+       yield {
+         ...responseProps,
+         type: "finalizeTextStream", // Custom type to signal text completion
+         fullText: fullText, // Include full text if needed by caller
+         // Include usageMetadata here
+         usageMetadata: usageMetadata || null,
+       };
+    }
+
+  } catch (error) {
+      console.error("Error processing Gemini stream:", error);
+      yield {
+          ...responseProps,
+          type: "abort",
+          error: `Error processing stream: ${error.message}`,
+      };
+  } finally {
+    // Yield a final metrics chunk regardless of text/tool call outcome (unless aborted)
+    // This standardizes how the caller receives final metrics.
+    // Check if we aborted early; if so, usageMetadata might be null or incomplete.
+    if (usageMetadata) {
+       yield {
+         ...responseProps,
+         type: "finalizeStreamMetrics",
+         metrics: {
+             promptTokenCount: usageMetadata.promptTokenCount || 0,
+             completionTokenCount: usageMetadata.candidatesTokenCount || 0, // Assuming candidateTokenCount maps to completion
+             totalTokenCount: usageMetadata.totalTokenCount || 0,
+         },
+       };
+    } else {
+       // Yield empty metrics if not available or error occurred fetching them
+       // We can still calculate duration in the caller.
+       yield {
+         ...responseProps,
+         type: "finalizeStreamMetrics",
+         metrics: {
+             promptTokenCount: 0,
+             completionTokenCount: 0,
+             totalTokenCount: 0,
+         },
+       };
+    }
   }
 }
 

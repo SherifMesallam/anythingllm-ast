@@ -7,6 +7,8 @@ const { MODEL_MAP } = require("../modelMap");
 const {
   LLMPerformanceMonitor,
 } = require("../../helpers/chat/LLMPerformanceMonitor");
+const { v4: uuidv4 } = require("uuid");
+const { formatToolsForOpenAI } = require("../../llm/tools");
 
 class OpenAiLLM {
   constructor(embedder = null, modelPreference = null) {
@@ -137,12 +139,17 @@ class OpenAiLLM {
         `OpenAI chat: ${this.model} is not valid for chat completion!`
       );
 
+    // Define the tools the LLM can call using the formatter
+    const tools = formatToolsForOpenAI();
+
     const result = await LLMPerformanceMonitor.measureAsyncFunction(
       this.openai.chat.completions
         .create({
           model: this.model,
           messages,
           temperature: this.isOTypeModel ? 1 : temperature, // o1 models only accept temperature 1
+          tools: tools, // Pass defined tools
+          tool_choice: "auto", // Let the model decide whether to use tools
         })
         .catch((e) => {
           throw new Error(e.message);
@@ -155,8 +162,28 @@ class OpenAiLLM {
     )
       return null;
 
+    const responseMessage = result.output.choices[0].message;
+
+    // Check if the model wants to call a tool
+    if (responseMessage.tool_calls) {
+       // Return the tool calls information instead of a text response
+       // The calling code will need to handle this, execute the tool, and call back.
+       return {
+         message: responseMessage,
+         toolCalls: responseMessage.tool_calls,
+         metrics: {
+           prompt_tokens: result.output.usage?.prompt_tokens || 0,
+           completion_tokens: result.output.usage?.completion_tokens || 0,
+           total_tokens: result.output.usage?.total_tokens || 0,
+           outputTps: 0,
+           duration: result.duration,
+         },
+       };
+    }
+
+    // If no tool call, return the text response as before
     return {
-      textResponse: result.output.choices[0].message.content,
+      textResponse: responseMessage.content,
       metrics: {
         prompt_tokens: result.output.usage.prompt_tokens || 0,
         completion_tokens: result.output.usage.completion_tokens || 0,
@@ -173,23 +200,33 @@ class OpenAiLLM {
         `OpenAI chat: ${this.model} is not valid for chat completion!`
       );
 
-    const measuredStreamRequest = await LLMPerformanceMonitor.measureStream(
-      this.openai.chat.completions.create({
+    // Define tools here as well for the streaming call using the formatter
+    const tools = formatToolsForOpenAI();
+
+    // Directly return the stream from the OpenAI API call
+    // Performance Monitor needs careful integration with generators; handle metrics later if possible.
+    try {
+      const stream = await this.openai.chat.completions.create({
         model: this.model,
         stream: true,
         messages,
-        temperature: this.isOTypeModel ? 1 : temperature, // o1 models only accept temperature 1
-      }),
-      messages
-      // runPromptTokenCalculation: true - We manually count the tokens because OpenAI does not provide them in the stream
-      // since we are not using the OpenAI API version that supports this `stream_options` param.
-    );
-
-    return measuredStreamRequest;
+        temperature: this.isOTypeModel ? 1 : temperature,
+        tools: tools,
+        tool_choice: "auto",
+      });
+      return { stream }; // Return the raw stream
+    } catch (e) {
+      console.error("OpenAI API Stream Error:", e);
+      throw new Error(
+        `OpenAI::streamGetChatCompletion failed. ${e.message || "Unknown error"}`
+      );
+    }
   }
 
-  handleStream(response, stream, responseProps) {
-    return handleDefaultStreamResponseV2(response, stream, responseProps);
+  // Return the generator function
+  handleStream(response, streamObject, responseProps) {
+    const { stream } = streamObject;
+    return handleOpenAIStreamResponseV2Generator(stream, responseProps);
   }
 
   // Simple wrapper for dynamic embedder & normalize interface for all LLM implementations
@@ -204,6 +241,121 @@ class OpenAiLLM {
     const { messageArrayCompressor } = require("../../helpers/chat");
     const messageArray = this.constructPrompt(promptArgs);
     return await messageArrayCompressor(this, messageArray, rawHistory);
+  }
+
+  static supportsTools() {
+    return true; // OpenAI supports function calling
+  }
+}
+
+// Async generator function to handle OpenAI streaming response with tool calls
+async function* handleOpenAIStreamResponseV2Generator(stream, responseProps) {
+  let fullText = "";
+  let currentToolCalls = [];
+  let toolCallStarted = false;
+
+  try {
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta;
+      const finishReason = chunk.choices?.[0]?.finish_reason;
+
+      if (delta?.content) {
+        const textChunk = delta.content;
+        fullText += textChunk;
+        yield {
+          ...responseProps,
+          type: "textResponseChunk",
+          textResponse: textChunk,
+        };
+      }
+
+      // Check for tool call start and chunks
+      if (delta?.tool_calls) {
+        toolCallStarted = true;
+        for (const toolCallChunk of delta.tool_calls) {
+          if (toolCallChunk.index >= currentToolCalls.length) {
+            // Start of a new tool call
+            currentToolCalls.push({
+              id: toolCallChunk.id || `tool_${uuidv4()}`, // Ensure ID exists
+              function: {
+                name: toolCallChunk.function?.name || "",
+                arguments: toolCallChunk.function?.arguments || "",
+              },
+              type: toolCallChunk.type || "function", // Usually 'function'
+            });
+          } else {
+            // Append arguments to existing tool call
+            const tc = currentToolCalls[toolCallChunk.index];
+            if(toolCallChunk.function?.arguments) {
+              tc.function.arguments += toolCallChunk.function.arguments;
+            }
+            // Update name if it arrives later (less common)
+            if(toolCallChunk.function?.name) {
+               tc.function.name = toolCallChunk.function.name;
+            }
+             // Update id if it arrives later (less common)
+            if(toolCallChunk.id) {
+               tc.id = toolCallChunk.id;
+            }
+          }
+        }
+      }
+
+      // Stream finished
+      if (finishReason) {
+        if (finishReason === "tool_calls") {
+          if (!toolCallStarted || currentToolCalls.length === 0) {
+             throw new Error("Stream finished with 'tool_calls' but no tool call data was received.");
+          }
+          // Construct the assistant message that contained these tool calls
+          const assistantMessage = {
+             role: 'assistant',
+             content: null,
+             tool_calls: currentToolCalls.map(tc => ({ // Ensure structure matches API expectation
+                 id: tc.id,
+                 type: tc.type,
+                 function: {
+                    name: tc.function.name,
+                    arguments: tc.function.arguments,
+                 },
+             }))
+          };
+
+          console.log("OpenAI stream finished with tool calls:", currentToolCalls);
+          yield {
+            ...responseProps,
+            type: "tool_call_chunk",
+            toolCalls: currentToolCalls, // Send the aggregated tool calls
+            assistantMessage: assistantMessage // Send the reconstructed assistant message
+          };
+          return; // End generation after tool call
+        } else if (finishReason === "stop") {
+          console.log("OpenAI stream finished normally.");
+          yield {
+            ...responseProps,
+            type: "finalizeTextStream",
+            fullText: fullText,
+          };
+          return; // End generation
+        } else {
+           // Handle other finish reasons (length, content_filter, etc.) as errors/aborts
+           console.error(`OpenAI stream finished unexpectedly: ${finishReason}`);
+           yield {
+             ...responseProps,
+             type: "abort",
+             error: `Stream finished unexpectedly: ${finishReason}`,
+           };
+           return;
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error processing OpenAI stream:", error);
+    yield {
+      ...responseProps,
+      type: "abort",
+      error: `Error processing stream: ${error.message}`,
+    };
   }
 }
 
