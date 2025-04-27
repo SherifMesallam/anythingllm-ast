@@ -464,7 +464,7 @@ class GeminiLLM {
     // Prepare model instance with potential system instruction for this call
     const modelInstance = this.genAI.getGenerativeModel({
       model: this.model,
-      ...(systemInstruction && { systemInstruction: systemInstruction.content }), // Add system instruction if exists
+      ...(systemInstruction && { systemInstruction }),
     });
 
     const chat = modelInstance.startChat({
@@ -657,7 +657,7 @@ class GeminiLLM {
     // Prepare model instance with potential system instruction for this call
     const modelInstance = this.genAI.getGenerativeModel({
       model: this.model,
-      ...(systemInstruction && { systemInstruction: systemInstruction.content }), // Add system instruction if exists
+      ...(systemInstruction && { systemInstruction }),
     });
 
     // Get the last user message content
