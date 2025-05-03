@@ -419,6 +419,11 @@ class GeminiLLM {
   }
 
   async getChatCompletion(messages = null, { temperature = 0.7 }) {
+    // --- BEGIN ADDED LOGGING ---
+    console.log("\x1b[34m[LLM_REQUEST_PAYLOAD][0m [Gemini - getChatCompletion]");
+    console.log(JSON.stringify({ model: this.model, messages: messages }, null, 2));
+    // --- END ADDED LOGGING ---
+
     const result = await LLMPerformanceMonitor.measureAsyncFunction(
       this.openai.chat.completions
         .create({
@@ -451,6 +456,11 @@ class GeminiLLM {
   }
 
   async streamGetChatCompletion(messages = null, { temperature = 0.7 }) {
+    // --- BEGIN ADDED LOGGING ---
+    console.log("\x1b[34m[LLM_REQUEST_PAYLOAD][0m [Gemini - streamGetChatCompletion]");
+    console.log(JSON.stringify({ model: this.model, messages: messages }, null, 2));
+    // --- END ADDED LOGGING ---
+
     const measuredStreamRequest = await LLMPerformanceMonitor.measureStream(
       this.openai.chat.completions.create({
         model: this.model,

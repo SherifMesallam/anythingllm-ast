@@ -387,6 +387,7 @@ class TextSplitter {
       const startLine = node.loc.start.line;
       const endLine = node.loc.end.line;
       let nodeName = null;
+      let extendsClassName = null;
 
       // Extract name based on common patterns
       if (node.id?.name) { // FunctionDeclaration, ClassDeclaration, VariableDeclarator (within VariableDeclaration)
@@ -398,14 +399,23 @@ class TextSplitter {
         nodeName = node.declarations[0].id?.name;
       }
 
+      // Extract extends info for classes
+      if (node.type === 'ClassDeclaration' && node.superClass) {
+        // Attempt to get name, fallback to source snippet
+        extendsClassName = node.superClass.name || documentText.substring(node.superClass.start, node.superClass.end);
+      }
+
       const chunkMetadata = {
         sourceType: 'ast',
         language: 'js',
+        filePath: this.config.filename || null, // Add file path
         nodeType: node.type,
         nodeName: nodeName,
         parentName: parentName, // Pass parent name
         startLine: startLine,
         endLine: endLine,
+        extendsClass: extendsClassName, // Add extends info
+        // Consider adding async, generator flags if needed later
       };
 
       this.log(`[AST] Helper: Identified JS Node (Type: ${node.type}, Name: ${nodeName}, Parent: ${parentName}, Lines: ${startLine}-${endLine})`);
@@ -427,19 +437,73 @@ class TextSplitter {
       const startLine = node.loc.start.line;
       const endLine = node.loc.end.line;
       let nodeName = null;
+      let extendsClassName = null;
+      let implementsInterfaces = [];
+      let usesTraits = [];
+      let modifiers = {}; // Store visibility, static, abstract, etc.
 
       if (node.name) {
         nodeName = typeof node.name === 'string' ? node.name : node.name.name; // Handle Identifier object
       }
 
+      // Extract details for class/interface/trait
+      if (['class', 'interface', 'trait'].includes(node.kind)) {
+        // Extends (for class/interface)
+        if (node.extends) {
+          const extendsNode = Array.isArray(node.extends) ? node.extends[0] : node.extends; // php-parser can return array or object
+          extendsClassName = extendsNode?.name || documentText.substring(extendsNode?.loc.start.offset, extendsNode?.loc.end.offset);
+        }
+        // Implements (for class)
+        if (node.implements && Array.isArray(node.implements)) {
+          implementsInterfaces = node.implements.map(iface => iface?.name || documentText.substring(iface?.loc.start.offset, iface?.loc.end.offset));
+        }
+        // Traits Used (for class/trait)
+        if (node.body && Array.isArray(node.body)) {
+          node.body.forEach(bodyNode => {
+            if (bodyNode.kind === 'traituse') {
+              if (bodyNode.traits && Array.isArray(bodyNode.traits)) {
+                usesTraits = usesTraits.concat(bodyNode.traits.map(trait => trait?.name || documentText.substring(trait?.loc.start.offset, trait?.loc.end.offset)));
+              }
+            }
+          });
+        }
+      }
+
+      // Extract Modifiers (visibility, static, abstract, final etc.) for relevant kinds
+      if (['class', 'interface', 'trait', 'method', 'property', 'classconstant'].includes(node.kind) && node.flags !== undefined) {
+         // Assuming flags are numeric constants from php-parser (need to verify exact values)
+         // Example flags (might need adjustment based on php-parser version):
+         const MODIFIER_PUBLIC = 1;
+         const MODIFIER_PROTECTED = 2;
+         const MODIFIER_PRIVATE = 4;
+         const MODIFIER_STATIC = 8;
+         const MODIFIER_ABSTRACT = 16;
+         const MODIFIER_FINAL = 32;
+         const MODIFIER_READONLY = 64; // Check if this flag exists
+
+         if (node.flags & MODIFIER_STATIC) modifiers.isStatic = true;
+         if (node.flags & MODIFIER_ABSTRACT) modifiers.isAbstract = true;
+         if (node.flags & MODIFIER_FINAL) modifiers.isFinal = true;
+         if (node.flags & MODIFIER_READONLY) modifiers.isReadonly = true; // Add check
+
+         if (node.flags & MODIFIER_PROTECTED) modifiers.visibility = 'protected';
+         else if (node.flags & MODIFIER_PRIVATE) modifiers.visibility = 'private';
+         else modifiers.visibility = 'public'; // Default public
+      }
+
       const chunkMetadata = {
         sourceType: 'ast',
         language: 'php',
+        filePath: this.config.filename || null, // Add file path
         nodeType: node.kind,
         nodeName: nodeName,
         parentName: parentName, // Pass parent name
         startLine: startLine,
         endLine: endLine,
+        extendsClass: extendsClassName, // Add extends info
+        implementsInterfaces: implementsInterfaces.length > 0 ? implementsInterfaces : null, // Add implements info
+        usesTraits: usesTraits.length > 0 ? usesTraits : null, // Add trait info
+        modifiers: Object.keys(modifiers).length > 0 ? modifiers : null, // Add modifiers
       };
 
       this.log(`[AST] Helper: Identified PHP Node (Kind: ${node.kind}, Name: ${nodeName}, Parent: ${parentName}, Lines: ${startLine}-${endLine})`);
