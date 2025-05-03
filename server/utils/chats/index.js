@@ -92,8 +92,32 @@ async function chatPrompt(workspace, user = null) {
   const basePrompt =
     workspace?.openAiPrompt ??
     "Given the following conversation, relevant context, and a follow up question, reply with an answer to the current question the user is asking. Return only your response to the question given the above information following the users instructions as needed.";
+
+  const metadataInstructions = `
+\n---
+CONTEXT & METADATA INSTRUCTIONS:
+Context sources are provided in the following format:
+--- Context Chunk [N] ---
+Source File: [Filename/Source]
+Element Type: [Type like CLASS, METHOD, FUNCTION, or Text]
+Element Name: [Name of the element, if applicable]
+Lines: [Start-End lines in the original file, if applicable]
+Parent Context: [Parent element name, e.g., class name, if applicable]
+Relevance Score: [Similarity score of this chunk]
+--- Code/Text ---
+[The actual code or text content of the chunk]
+--- End Chunk [N] ---
+
+When answering, pay close attention to the metadata provided with each context chunk, especially the Source File, Element Type, Name, and Lines, to understand the structure and origin of the code. Use this metadata to provide accurate and well-referenced answers. If referencing specific code, mention the source file and lines if available.
+---
+`;
+
+  // Append the metadata instructions to the base prompt.
+  const promptWithInstructions = basePrompt + metadataInstructions;
+
+  // Expand any variables in the combined prompt.
   return await SystemPromptVariables.expandSystemPromptVariables(
-    basePrompt,
+    promptWithInstructions,
     user?.id
   );
 }

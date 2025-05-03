@@ -87,16 +87,51 @@ class GeminiLLM {
     return now - timestampMs > MAX_STALE;
   }
 
-  #appendContext(contextTexts = []) {
-    if (!contextTexts || !contextTexts.length) return "";
-    return (
-      "\nContext:\n" +
-      contextTexts
-        .map((text, i) => {
-          return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
-        })
-        .join("")
-    );
+  // Modified to accept contextDocuments (array of objects)
+  #appendContext(contextDocuments = []) {
+    if (!contextDocuments || !contextDocuments.length) return "";
+
+    // Start with the main context heading
+    let fullContextString = "\nContext:\n";
+
+    // Map each document/chunk object to a formatted string with metadata
+    fullContextString += contextDocuments
+      .map((doc, i) => {
+        // Assume 'doc' is the chunk object containing text and metadata
+        const text = doc.text || doc.pageContent || ""; // Get the text content
+        const metadata = doc.metadata || doc; // Metadata might be top-level or nested
+
+        // Extract relevant metadata fields (adjust keys based on actual structure)
+        const relevantMeta = {
+          file: metadata.title || metadata.filename || metadata.source || 'Unknown',
+          type: metadata.nodeType || (text.length > 0 ? 'Text' : 'Metadata'), // Default to 'Text' if text exists
+          name: metadata.nodeName || null,
+          lines: (metadata.startLine && metadata.endLine) ? `${metadata.startLine}-${metadata.endLine}` : null,
+          parent: metadata.parentName || null,
+          score: metadata.score?.toFixed(4) || null, // Include similarity score if available
+          // Add other potentially useful fields: language, isSubChunk, etc.
+        };
+
+        // Build the formatted string for this chunk
+        let formattedChunk = `--- Context Chunk ${i + 1} ---
+`;
+        formattedChunk += `Source File: ${relevantMeta.file}\n`;
+        formattedChunk += `Element Type: ${relevantMeta.type}\n`;
+        if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
+        if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
+        if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
+        if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
+        formattedChunk += `--- Code/Text ---
+`;
+        formattedChunk += `${text}\n`; // The actual code/text chunk
+        formattedChunk += `--- End Chunk ${i + 1} ---
+\n`; // Add double newline for separation
+
+        return formattedChunk;
+      })
+      .join("");
+
+    return fullContextString;
   }
 
   streamingEnabled() {
@@ -340,41 +375,47 @@ class GeminiLLM {
    */
   constructPrompt({
     systemPrompt = "",
-    contextTexts = [],
+    contextDocuments = [],
     chatHistory = [],
     userPrompt = "",
     attachments = [], // This is the specific attachment for only this prompt
   }) {
-    let prompt = [];
+    let messages = [];
+
+    // Prepend initial system prompt
+    // Gemini models require system prompt to be the first message & only one message.
     if (this.supportsSystemPrompt) {
-      prompt.push({
+      // Append context directly to the system prompt content
+      messages.push({
         role: "system",
-        content: `${systemPrompt}${this.#appendContext(contextTexts)}`,
+        content: `${systemPrompt}${this.#appendContext(contextDocuments)}`,
       });
     } else {
-      this.#log(
-        `${this.model} - does not support system prompts - emulating...`
-      );
-      prompt.push(
-        {
-          role: "user",
-          content: `${systemPrompt}${this.#appendContext(contextTexts)}`,
-        },
-        {
-          role: "assistant",
-          content: "Okay.",
-        }
-      );
+      // For models that don't support system prompts, we have to inject it as the first user message
+      // and merge the context in there as well.
+      messages.push({
+        role: "user",
+        content: `${systemPrompt}${this.#appendContext(contextDocuments)}`,
+      });
+      // And then add an empty assistant response to signify the end of the "system" prompt.
+      messages.push({
+        role: "assistant",
+        content: "Okay, I will use the provided context and system instructions.",
+      });
     }
 
-    return [
-      ...prompt,
-      ...formatChatHistory(chatHistory, this.#generateContent),
-      {
-        role: "user",
-        content: this.#generateContent({ userPrompt, attachments }),
-      },
-    ];
+    // Add chat history (formatted)
+    messages = messages.concat(
+      formatChatHistory(chatHistory, this.#generateContent)
+    );
+
+    // Add the current user prompt with its attachments
+    messages.push({
+      role: "user",
+      content: this.#generateContent({ userPrompt, attachments }),
+    });
+
+    return messages;
   }
 
   async getChatCompletion(messages = null, { temperature = 0.7 }) {

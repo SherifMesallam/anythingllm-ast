@@ -96,6 +96,7 @@ async function streamChatWithWorkspace(
   let completeText;
   let metrics = {};
   let contextTexts = [];
+  let contextDocuments = [];
   let sources = [];
   let pinnedDocIdentifiers = [];
   const { rawHistory, chatHistory } = await recentChatHistory({
@@ -120,7 +121,7 @@ async function streamChatWithWorkspace(
       pinnedDocs.forEach((doc) => {
         const { pageContent, ...metadata } = doc;
         pinnedDocIdentifiers.push(sourceIdentifier(doc));
-        contextTexts.push(doc.pageContent);
+        contextDocuments.push(doc);
         sources.push({
           text:
             pageContent.slice(0, 1_000) +
@@ -175,12 +176,12 @@ async function streamChatWithWorkspace(
   // If a past citation was used to answer the question - that is visible in the history so it logically makes sense
   // and does not appear to the user that a new response used information that is otherwise irrelevant for a given prompt.
   // TLDR; reduces GitHub issues for "LLM citing document that has no answer in it" while keep answers highly accurate.
-  contextTexts = [...contextTexts, ...filledSources.contextTexts];
+  contextDocuments = [...contextDocuments, ...filledSources.contextSources];
   sources = [...sources, ...vectorSearchResults.sources];
 
   // If in query mode and no context chunks are found from search, backfill, or pins -  do not
   // let the LLM try to hallucinate a response or use general knowledge and exit early
-  if (chatMode === "query" && contextTexts.length === 0) {
+  if (chatMode === "query" && contextDocuments.length === 0) {
     const textResponse =
       workspace?.queryRefusalResponse ??
       "There is no relevant information in this workspace to answer your query.";
@@ -215,7 +216,7 @@ async function streamChatWithWorkspace(
     {
       systemPrompt: await chatPrompt(workspace, user),
       userPrompt: updatedMessage,
-      contextTexts,
+      contextDocuments,
       chatHistory,
       attachments,
     },
