@@ -430,6 +430,33 @@ const LanceDb = {
           }
           // --- END ENHANCED LOGGING (Before Push) ---
 
+          // --- BEGIN UTF-8 VALIDATION ---
+          let isValidUtf8 = true;
+          let cleanedChunkText = chunkText;
+          try {
+            // Buffer.from will throw if it encounters invalid UTF-8 sequences when encoding is specified.
+            // We compare the original length to the length after converting to buffer and back to check for subtle issues.
+            const buffer = Buffer.from(chunkText, 'utf8');
+            const roundTripText = buffer.toString('utf8');
+            if (roundTripText !== chunkText) {
+               // This might indicate issues even if Buffer.from didn't throw, like replacement chars being inserted.
+               console.warn(`\x1b[31m[WARN] LanceDB: Chunk ${i + 1} text content changed after UTF-8 round trip. Potential encoding issues. Original length: ${chunkText.length}, Round-trip length: ${roundTripText.length}. Attempting to use cleaned text. [0m`);
+               // cleanedChunkText = roundTripText; // Optionally use the 'cleaned' version
+               // OR decide to skip the chunk entirely if this is problematic
+               // isValidUtf8 = false; // Mark as invalid if needed
+            }
+            // Basic check for UTF-8 replacement character, often indicates problems
+            if (cleanedChunkText.includes('\uFFFD')) {
+              console.warn(`\x1b[31m[WARN] LanceDB: Chunk ${i + 1} text contains UTF-8 replacement character (). Potential encoding issues. [0m`);
+              // Optionally clean further or skip
+            }
+
+          } catch (utf8Error) {
+            console.error(`\x1b[31m[ERROR] LanceDB: Chunk ${i + 1} text contains invalid UTF-8 sequence! Skipping chunk. [0m`, utf8Error.message);
+            isValidUtf8 = false;
+          }
+          // --- END UTF-8 VALIDATION ---
+
           // --- Comprehensive check/fix for ALL empty strings in metadata ---
           for (const key in otherMetadata) {
             if (otherMetadata.hasOwnProperty(key) && typeof otherMetadata[key] === 'string' && otherMetadata[key] === "") {
@@ -440,16 +467,19 @@ const LanceDb = {
           // ----------------------------------------------------------------
 
           // --- TEMPORARY DEBUGGING: Submit minimal data --- 
-          submissions.push({
-            id: vectorRecord.id,
-            vector: vectorRecord.values,
-            text: chunkText, 
-            // Minimal metadata for identification
-            filePath: otherMetadata.filePath || null, 
-            docId: otherMetadata.docId || metadata.docId || null,
-            chunkId: vectorRecord.id // Reference original ID if needed
-            // ...otherMetadata // <-- Temporarily disabled spreading all metadata
-          });
+          // Only push if UTF-8 is valid (or skip if needed based on policy)
+          if (isValidUtf8) {
+            submissions.push({
+              id: vectorRecord.id,
+              vector: vectorRecord.values,
+              text: cleanedChunkText, // Use potentially cleaned text
+              // Minimal metadata for identification
+              filePath: otherMetadata.filePath || null, 
+              docId: otherMetadata.docId || metadata.docId || null,
+              chunkId: vectorRecord.id // Reference original ID if needed
+              // ...otherMetadata // <-- Temporarily disabled spreading all metadata
+            });
+          }
           // --- END TEMPORARY DEBUGGING ---
           
           /* // Original submission logic (commented out for debugging)
@@ -508,7 +538,9 @@ const LanceDb = {
                   console.log(`LanceDB:addDocumentToNamespace - Batch written successfully.`);
               } catch (batchError) {
                   console.error(`[ERROR] LanceDB: Failed to write batch! Batch Size: ${submissionBatch.length}`);
-                  console.error("[ERROR] LanceDB: Failing batch data:", JSON.stringify(submissionBatch, null, 2));
+                  // Exclude vectors from the error log output
+                  const batchWithoutVectors = submissionBatch.map(({ vector, ...rest }) => rest);
+                  console.error("[ERROR] LanceDB: Failing batch data (vectors excluded):", JSON.stringify(batchWithoutVectors, null, 2));
                   throw batchError; // Re-throw to be caught by outer try/catch
               }
           }
@@ -542,7 +574,9 @@ const LanceDb = {
             console.log(`LanceDB:addDocumentToNamespace - Single submission successful.`);
           } catch (singleSubmitError) {
             console.error(`[ERROR] LanceDB: Failed to write single submission! Count: ${totalCount}`);
-            console.error("[ERROR] LanceDB: Failing submission data:", JSON.stringify(submissions, null, 2));
+            // Exclude vectors from the error log output
+            const submissionsWithoutVectors = submissions.map(({ vector, ...rest }) => rest);
+            console.error("[ERROR] LanceDB: Failing submission data (vectors excluded):", JSON.stringify(submissionsWithoutVectors, null, 2));
             throw singleSubmitError; // Re-throw to be caught by outer try/catch
           }
         } else {
