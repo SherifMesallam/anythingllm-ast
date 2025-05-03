@@ -439,12 +439,27 @@ const LanceDb = {
           }
           // ----------------------------------------------------------------
 
+          // --- TEMPORARY DEBUGGING: Submit minimal data --- 
+          submissions.push({
+            id: vectorRecord.id,
+            vector: vectorRecord.values,
+            text: chunkText, 
+            // Minimal metadata for identification
+            filePath: otherMetadata.filePath || null, 
+            docId: otherMetadata.docId || metadata.docId || null,
+            chunkId: vectorRecord.id // Reference original ID if needed
+            // ...otherMetadata // <-- Temporarily disabled spreading all metadata
+          });
+          // --- END TEMPORARY DEBUGGING ---
+          
+          /* // Original submission logic (commented out for debugging)
           submissions.push({
             id: vectorRecord.id,
             vector: vectorRecord.values,
             text: chunkText, // Use original, non-truncated text for storage
             ...otherMetadata // Spread the rest of the metadata
           });
+          */
           documentVectors.push({ docId, vectorId: vectorRecord.id });
         }
       } else {
@@ -467,20 +482,24 @@ const LanceDb = {
               try {
                   console.log(`LanceDB:addDocumentToNamespace - Writing batch of ${submissionBatch.length} records...`);
                   // --- BEGIN ADDED LOGGING ---
-                  console.log("\x1b[31m[LANCEDB_BATCH_SUBMISSION_DATA][0m Batch size:", submissionBatch.length);
+                  console.log("\x1b[31m[LANCEDB_BATCH_SUBMISSION_DATA] [0m Batch size:", submissionBatch.length);
                   try {
                     // Use try/catch for JSON stringify in case of circular references, though unlikely here
-                    console.log(JSON.stringify(submissionBatch, null, 2));
+                    // Map to exclude the 'vector' field before logging
+                    const batchWithoutVectors = submissionBatch.map(({ vector, ...rest }) => rest);
+                    console.log(JSON.stringify(batchWithoutVectors, null, 2));
                   } catch (jsonError) {
-                    console.error("\x1b[31mError stringifying submission batch for logging:[0m", jsonError);
-                    console.log("Attempting to log individual items...");
+                    console.error("\x1b[31mError stringifying submission batch (no vectors) for logging: [0m", jsonError);
+                    console.log("Attempting to log individual items (no vectors)...");
                     submissionBatch.forEach((item, index) => {
                       console.log(`--- Item ${index + 1} ---`);
                       try {
-                        console.log(JSON.stringify(item, null, 2));
+                        const { vector, ...rest } = item;
+                        console.log(JSON.stringify(rest, null, 2));
                       } catch (itemJsonError) {
-                        console.error("\x1b[31mError stringifying item:[0m", itemJsonError);
-                        console.log("Item keys:", Object.keys(item)); // Log keys if stringify fails
+                        console.error("\x1b[31mError stringifying item (no vector): [0m", itemJsonError);
+                        const { vector, ...rest } = item;
+                        console.log("Item keys (excluding vector):", Object.keys(rest)); // Log keys if stringify fails
                       }
                     });
                   }
@@ -498,19 +517,23 @@ const LanceDb = {
           console.log(`LanceDB:addDocumentToNamespace - Submitting ${totalCount} records to LanceDB in a single batch...`);
           try {
             // --- BEGIN ADDED LOGGING ---
-            console.log("\x1b[31m[LANCEDB_SINGLE_SUBMISSION_DATA][0m Submission size:", submissions.length);
+            console.log("\x1b[31m[LANCEDB_SINGLE_SUBMISSION_DATA] [0m Submission size:", submissions.length);
             try {
-              console.log(JSON.stringify(submissions, null, 2));
+              // Map to exclude the 'vector' field before logging
+              const submissionsWithoutVectors = submissions.map(({ vector, ...rest }) => rest);
+              console.log(JSON.stringify(submissionsWithoutVectors, null, 2));
             } catch (jsonError) {
-              console.error("\x1b[31mError stringifying submission for logging:[0m", jsonError);
-              console.log("Attempting to log individual items...");
+              console.error("\x1b[31mError stringifying submission (no vectors) for logging: [0m", jsonError);
+              console.log("Attempting to log individual items (no vectors)...");
               submissions.forEach((item, index) => {
                 console.log(`--- Item ${index + 1} ---`);
                 try {
-                  console.log(JSON.stringify(item, null, 2));
+                  const { vector, ...rest } = item;
+                  console.log(JSON.stringify(rest, null, 2));
                 } catch (itemJsonError) {
-                  console.error("\x1b[31mError stringifying item:[0m", itemJsonError);
-                  console.log("Item keys:", Object.keys(item)); // Log keys if stringify fails
+                  console.error("\x1b[31mError stringifying item (no vector): [0m", itemJsonError);
+                  const { vector, ...rest } = item;
+                  console.log("Item keys (excluding vector):", Object.keys(rest)); // Log keys if stringify fails
                 }
               });
             }
