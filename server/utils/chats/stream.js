@@ -176,12 +176,22 @@ async function streamChatWithWorkspace(
   // If a past citation was used to answer the question - that is visible in the history so it logically makes sense
   // and does not appear to the user that a new response used information that is otherwise irrelevant for a given prompt.
   // TLDR; reduces GitHub issues for "LLM citing document that has no answer in it" while keep answers highly accurate.
-  contextDocuments = [...contextDocuments, ...filledSources.contextSources];
-  sources = [...sources, ...vectorSearchResults.sources];
+  
+  // Combine documents for context: Pinned docs + Historical fill docs + Current search results.
+  // Ensure we handle cases where sources might be null or undefined.
+  contextDocuments = [
+    ...contextDocuments, // Pinned docs were added earlier to this array
+    ...(filledSources.sources || []), // Use the correct property from fillSourceWindow
+    ...(vectorSearchResults.sources || []) // Add current search results (these should be full objects too)
+  ];
 
-  // If in query mode and no context chunks are found from search, backfill, or pins -  do not
+  // Keep original logic for sources used in citations (pinned + current search results only).
+  // This might need revisiting if citations from historical context are desired.
+  sources = [...sources, ...(vectorSearchResults.sources || [])]; 
+
+  // If in query mode and no context documents are found from search, backfill, or pins -  do not
   // let the LLM try to hallucinate a response or use general knowledge and exit early
-  if (chatMode === "query" && contextDocuments.length === 0) {
+  if (chatMode === "query" && contextDocuments.length === 0) { // Check the combined array
     const textResponse =
       workspace?.queryRefusalResponse ??
       "There is no relevant information in this workspace to answer your query.";
