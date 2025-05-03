@@ -408,11 +408,27 @@ const LanceDb = {
           }
           // ---
 
-          // --- Log metadata before push ---
-          console.log(`[DEBUG] LanceDB Preparing submission for chunk ${i + 1}`);
-          console.log("[DEBUG] LanceDB chunkText:", JSON.stringify(chunkText.substring(0, 100) + '...')); // Log preview
-          console.log("[DEBUG] LanceDB otherMetadata:", JSON.stringify(otherMetadata));
-          // --- End Log ---
+          // --- BEGIN ENHANCED LOGGING (Before Push) ---
+          console.log(`\x1b[33m[DEBUG] LanceDB Preparing chunk ${i + 1} metadata for push:[0m`);
+          try {
+            // Log lengths of potentially large fields
+            console.log(`  [DEBUG] Chunk Text Length: ${chunkText?.length || 0}`);
+            for (const key in otherMetadata) {
+              // Check for keys that were likely stringified from objects/arrays
+              if ((key === 'modifiers' || key === 'implementsInterfaces' || key === 'usesTraits' || key === 'extendsClass') && typeof otherMetadata[key] === 'string') {
+                console.log(`  [DEBUG] Length of stringified '${key}': ${otherMetadata[key].length}`);
+              }
+              // Log length if any other string seems excessively long (e.g., > 10k chars)
+              else if (typeof otherMetadata[key] === 'string' && otherMetadata[key].length > 10000) {
+                 console.log(`  [DEBUG] Length of long string field '${key}': ${otherMetadata[key].length}`);
+              }
+            }
+            // Optionally log the whole metadata object if lengths seem reasonable, but be cautious
+            // console.log(JSON.stringify(otherMetadata, null, 2));
+          } catch (logError) {
+            console.error("\x1b[31mError during enhanced logging before push:[0m", logError);
+          }
+          // --- END ENHANCED LOGGING (Before Push) ---
 
           // --- Comprehensive check/fix for ALL empty strings in metadata ---
           for (const key in otherMetadata) {
@@ -450,6 +466,25 @@ const LanceDb = {
           for (const submissionBatch of toChunks(submissions, BATCH_SIZE)) {
               try {
                   console.log(`LanceDB:addDocumentToNamespace - Writing batch of ${submissionBatch.length} records...`);
+                  // --- BEGIN ADDED LOGGING ---
+                  console.log("\x1b[31m[LANCEDB_BATCH_SUBMISSION_DATA][0m Batch size:", submissionBatch.length);
+                  try {
+                    // Use try/catch for JSON stringify in case of circular references, though unlikely here
+                    console.log(JSON.stringify(submissionBatch, null, 2));
+                  } catch (jsonError) {
+                    console.error("\x1b[31mError stringifying submission batch for logging:[0m", jsonError);
+                    console.log("Attempting to log individual items...");
+                    submissionBatch.forEach((item, index) => {
+                      console.log(`--- Item ${index + 1} ---`);
+                      try {
+                        console.log(JSON.stringify(item, null, 2));
+                      } catch (itemJsonError) {
+                        console.error("\x1b[31mError stringifying item:[0m", itemJsonError);
+                        console.log("Item keys:", Object.keys(item)); // Log keys if stringify fails
+                      }
+                    });
+                  }
+                  // --- END ADDED LOGGING ---
                   await this.updateOrCreateCollection(client, submissionBatch, namespace);
                   console.log(`LanceDB:addDocumentToNamespace - Batch written successfully.`);
               } catch (batchError) {
@@ -462,6 +497,24 @@ const LanceDb = {
           // If total count is positive but not > BATCH_SIZE, submit all at once
           console.log(`LanceDB:addDocumentToNamespace - Submitting ${totalCount} records to LanceDB in a single batch...`);
           try {
+            // --- BEGIN ADDED LOGGING ---
+            console.log("\x1b[31m[LANCEDB_SINGLE_SUBMISSION_DATA][0m Submission size:", submissions.length);
+            try {
+              console.log(JSON.stringify(submissions, null, 2));
+            } catch (jsonError) {
+              console.error("\x1b[31mError stringifying submission for logging:[0m", jsonError);
+              console.log("Attempting to log individual items...");
+              submissions.forEach((item, index) => {
+                console.log(`--- Item ${index + 1} ---`);
+                try {
+                  console.log(JSON.stringify(item, null, 2));
+                } catch (itemJsonError) {
+                  console.error("\x1b[31mError stringifying item:[0m", itemJsonError);
+                  console.log("Item keys:", Object.keys(item)); // Log keys if stringify fails
+                }
+              });
+            }
+            // --- END ADDED LOGGING ---
             await this.updateOrCreateCollection(client, submissions, namespace);
             console.log(`LanceDB:addDocumentToNamespace - Single submission successful.`);
           } catch (singleSubmitError) {
