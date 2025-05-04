@@ -469,13 +469,14 @@ const LanceDb = {
           // --- TEMPORARY DEBUGGING: Submit minimal data --- 
           // Only push if UTF-8 is valid (or skip if needed based on policy)
           if (isValidUtf8) {
+            const currentDocId = otherMetadata.docId || metadata.docId || null;
             submissions.push({
               id: vectorRecord.id,
               vector: vectorRecord.values,
               text: cleanedChunkText, // Use potentially cleaned text
               // Minimal metadata for identification
               filePath: otherMetadata.filePath || null, 
-              docId: otherMetadata.docId || metadata.docId || null,
+              docId: currentDocId ?? vectorRecord.id, // <-- Use chunkId as fallback if docId is null/undefined
               chunkId: vectorRecord.id // Reference original ID if needed
               // ...otherMetadata // <-- Temporarily disabled spreading all metadata
             });
