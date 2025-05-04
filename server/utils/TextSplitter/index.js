@@ -240,38 +240,37 @@ class TextSplitter {
 
         this.log(`[AST] #splitTextWithAST: Successfully parsed JS/JSX AST. Found ${ast.body?.length || 0} top-level nodes.`);
 
-        // Capture 'this.log' correctly bound to the instance
-        const log = this.log.bind(this);
-        // Capture '#addJsNodeToChunks' correctly bound to the instance
-        const addJsNode = this.#addJsNodeToChunks.bind(this);
-        
-        // Define visitors for walk.recursive
-        const visitors = {
+        // --- REVISED JS AST TRAVERSAL - Collect nodes first --- 
+        const collectedNodes = [];
+        this.log("[AST] Collecting chunkable JS node types (Function/Class/Method)...");
+        walk.recursive(ast, null, { // No state needed for collection
             FunctionDeclaration(node, state, c) { 
-                log(`[AST Walker] Visiting FunctionDeclaration: ${node.id?.name}`); 
-                addJsNode(node, documentText, astNodesToChunk); 
-                // Don't call c(node, state) here, as we are handling this node entirely.
+                // console.log(`[AST Walker] Found FunctionDeclaration: ${node.id?.name}`); 
+                collectedNodes.push(node);
+                // We don't call c() here, let the default walk continue
             },
             ClassDeclaration(node, state, c) { 
-                log(`[AST Walker] Visiting ClassDeclaration: ${node.id?.name}`); 
-                addJsNode(node, documentText, astNodesToChunk);
-                // If we wanted to process methods within the class here, we could:
-                // walk.recursive(node.body, state, { MethodDefinition: visitors.MethodDefinition }, base); 
-                // For now, we let the top-level recursive call handle finding methods if needed.
+                // console.log(`[AST Walker] Found ClassDeclaration: ${node.id?.name}`); 
+                collectedNodes.push(node);
+                // Could call c(node.body, state) to traverse into class if needed,
+                // but default walk should handle this.
             },
             MethodDefinition(node, state, c) { 
-                 log(`[AST Walker] Visiting MethodDefinition: ${node.key?.name}`); 
-                 addJsNode(node, documentText, astNodesToChunk);
-                 // Don't call c(node, state)
+                 // console.log(`[AST Walker] Found MethodDefinition: ${node.key?.name}`); 
+                 collectedNodes.push(node);
+                 // Don't call c() 
             },
-            // Let the 'base' handle traversing into other nodes
-        };
-
-        // Use walk.recursive for potentially better handling of custom + base visitors
-        this.log("[AST] Starting walk.recursive...");
-        walk.recursive(ast, this, visitors, base);
-        this.log("[AST] Finished walk.recursive.");
-        // --- END MODIFIED JS AST TRAVERSAL ---
+        }); // Let walk.recursive use its default base traversal
+        this.log(`[AST] Collected ${collectedNodes.length} chunkable JS nodes.`);
+        
+        // Now, process the collected nodes
+        this.log("[AST] Processing collected nodes into potential chunks...");
+        for (const node of collectedNodes) {
+            // Note: This might need adjustment if parent context is crucial and lost
+            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null); 
+        }
+        this.log(`[AST] Finished processing collected nodes. ${astNodesToChunk.length} potential chunks created.`);
+        // --- END REVISED JS AST TRAVERSAL ---
 
       } else if (language === 'php') {
         this.log("[AST] #splitTextWithAST: Attempting to parse PHP...");
