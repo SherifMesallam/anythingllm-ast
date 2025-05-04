@@ -209,6 +209,76 @@ class TextSplitter {
     return this.#splitter;
   }
 
+  // Helper to process a single PHP AST node (used in forEach)
+  #processPhpNode(node, index, documentText, astNodesToChunk) {
+    this.log(`[AST Process PHP] Processing PHP AST node ${index + 1} - Kind: ${node.kind}`);
+
+    // --- Hook Detection --- 
+    let isHookCall = false;
+    if (node.kind === 'expressionstatement' && node.expression.kind === 'call') {
+      const call = node.expression;
+      if (call.what.kind === 'name') {
+        const funcName = call.what.name;
+        const nodeStartLine = node.loc?.start?.line || null;
+        const nodeEndLine = node.loc?.end?.line || null;
+        const nodeText = this.getCodeFromRange(documentText, node.loc?.start?.offset, node.loc?.end?.offset);
+        let hookMetadata = {
+            sourceType: 'ast',
+            language: 'php',
+            filePath: this.config.filename || "",
+            startLine: nodeStartLine,
+            endLine: nodeEndLine,
+            featureContext: this.#featureContext || "",
+            registersHooks: [],
+            triggersHooks: [],
+        };
+
+        if (['add_action', 'add_filter'].includes(funcName)) {
+            isHookCall = true;
+            hookMetadata.nodeType = 'hookRegistration';
+            const hookNameArg = call.arguments[0];
+            const hookName = hookNameArg?.kind === 'string' ? hookNameArg.value :
+                             (hookNameArg ? this.getCodeFromRange(documentText, hookNameArg.loc?.start?.offset, hookNameArg.loc?.end?.offset) : 'unknown_hook');
+            const callbackNode = call.arguments[1];
+            const callback = callbackNode ? this.getCodeFromRange(documentText, callbackNode.loc?.start?.offset, callbackNode.loc?.end?.offset) : 'unknown_callback';
+            const priority = call.arguments[2]?.value ?? 10;
+            const acceptedArgs = call.arguments[3]?.value ?? 1;
+            hookMetadata.registersHooks.push({ hookName, callback, type: funcName === 'add_action' ? 'action' : 'filter', priority, acceptedArgs });
+            this.log(`[AST Process PHP] Detected Hook Registration: ${funcName}('${hookName}')`);
+            astNodesToChunk.push({ text: nodeText, metadata: hookMetadata });
+        } else if (['do_action', 'apply_filters'].includes(funcName)) {
+            isHookCall = true;
+            hookMetadata.nodeType = 'hookTrigger';
+            const hookNameArg = call.arguments[0];
+            const hookName = hookNameArg?.kind === 'string' ? hookNameArg.value :
+                             (hookNameArg ? this.getCodeFromRange(documentText, hookNameArg.loc?.start?.offset, hookNameArg.loc?.end?.offset) : 'unknown_hook');
+            hookMetadata.triggersHooks.push({ hookName, type: funcName === 'do_action' ? 'action' : 'filter' });
+            this.log(`[AST Process PHP] Detected Hook Trigger: ${funcName}('${hookName}')`);
+            astNodesToChunk.push({ text: nodeText, metadata: hookMetadata });
+        }
+      }
+    }
+    if (isHookCall) return; // Don't process further if it was a hook call
+
+    // --- Class/Trait/Method Handling --- 
+    if (node.kind === 'class' || node.kind === 'trait') {
+      const parentClassName = node.name?.name || (typeof node.name === 'string' ? node.name : null);
+      this.log(`[AST Process PHP] Entering PHP ${node.kind} context: ${parentClassName}`);
+      this.#addPhpNodeToChunks(node, documentText, astNodesToChunk, null);
+      if (node.body) {
+        node.body.forEach(bodyNode => { // Assuming forEach is safe here as #addPhpNodeToChunks is bound
+          if (bodyNode.kind === 'method') {
+            this.#addPhpNodeToChunks(bodyNode, documentText, astNodesToChunk, parentClassName);
+          }
+        });
+      }
+      return; // Don't process class/trait node generically after handling its body
+    }
+
+    // --- Generic Node Handling --- 
+    this.#addPhpNodeToChunks(node, documentText, astNodesToChunk, null);
+  }
+
   // Core AST splitting logic - now returns Promise<ChunkWithMetadata[]>
   async #splitTextWithAST(documentText, language) {
     this.log(`[AST] #splitTextWithAST: Starting AST splitting for ${language}.`);
@@ -312,32 +382,9 @@ class TextSplitter {
         const ast = parser.parseCode(documentText);
         this.log(`[AST] #splitTextWithAST: Successfully parsed PHP AST. Found ${ast.children?.length || 0} top-level nodes.`);
 
-        ast.children.forEach((node, index) => {
-          this.log(`[AST] #splitTextWithAST: Processing PHP AST node ${index + 1}/${ast.children.length} - Kind: ${node.kind}`);
+        // Use forEach with .bind to ensure correct `this` context for the processing method
+        ast.children.forEach(this.#processPhpNode.bind(this, documentText, astNodesToChunk));
 
-          // Check for Class or Trait context first
-          if (node.kind === 'class' || node.kind === 'trait') {
-            const parentClassName = node.name?.name || (typeof node.name === 'string' ? node.name : null);
-            this.log(`[AST] #splitTextWithAST: Entering PHP ${node.kind} context: ${parentClassName}`);
-            // Add the class/trait definition itself
-            this.#addPhpNodeToChunks(node, documentText, astNodesToChunk, null);
-
-            // Iterate through body for methods
-            if (node.body) {
-              node.body.forEach(bodyNode => {
-                if (bodyNode.kind === 'method') {
-                  this.#addPhpNodeToChunks(bodyNode, documentText, astNodesToChunk, parentClassName);
-                }
-                 // Can add handling for properties (propertystatement) if needed
-              });
-            }
-             // After processing class body, continue to next top-level node
-            return; // Skips the generic processing below for this class/trait node
-          }
-
-          // Process other top-level nodes (functions, namespaces, statements)
-          this.#addPhpNodeToChunks(node, documentText, astNodesToChunk, null);
-        });
       } else if (language === 'css') { // <-- Add CSS block
         this.log("[AST] #splitTextWithAST: Attempting to parse CSS with PostCSS...");
         const ast = postcss.parse(documentText, { from: this.config.filename || 'unknown.css' });
@@ -461,7 +508,20 @@ class TextSplitter {
     }
 
     this.log(`[AST] #splitTextWithAST: Finished AST splitting process for ${language}. Total final chunks generated: ${finalChunks.length}.`);
-    return finalChunks.filter(chunkObject => !!chunkObject.text.trim()); // Filter empty text chunks
+    const header = this.stringifyHeader(); // Get metadata header string
+
+    if (!header) {
+      // Return chunks with metadata as-is if no header
+      return finalChunks.filter(chunkObject => !!chunkObject.text.trim());
+    }
+
+    // Prepend header to each non-empty chunk's text property if header exists
+    return finalChunks
+      .filter(chunkObject => !!chunkObject.text.trim())
+      .map(chunkObject => ({
+          ...chunkObject,
+          text: `${header}${chunkObject.text}` // Prepend header to text
+      }));
   }
 
   // Helper to add JS node chunk with metadata
@@ -849,6 +909,12 @@ class TextSplitter {
           ...chunkObject,
           text: `${header}${chunkObject.text}` // Prepend header to text
       }));
+  }
+
+  // Helper to get code snippet from start/end positions - Made public
+  getCodeFromRange(text, start, end) {
+    if (start === undefined || end === undefined) return "";
+    return text.substring(start, end);
   }
 }
 
