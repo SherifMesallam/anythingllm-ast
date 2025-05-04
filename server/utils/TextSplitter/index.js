@@ -256,10 +256,12 @@ class TextSplitter {
               });
             }
           },
+          /*
           VariableDeclaration: (node) => {
             // Could potentially iterate node.declarations if needed
             this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
           },
+          */
           // Handle top-level exports containing the above
           ExportNamedDeclaration: (node) => {
             if (node.declaration) {
@@ -551,35 +553,156 @@ class TextSplitter {
         nodeName = typeof node.name === 'string' ? node.name : node.name.name; // Assign to initialized variable
       }
 
-      // Existing DocBlock Parsing logic
+      // --- Re-implement DocBlock Parsing ---
       if (node.leadingComments && node.leadingComments.length > 0) {
-        // ... (rest of DocBlock parsing, assigning to initialized variables) ...
-      }
+        // Find the last block comment directly preceding the node
+        // php-parser puts comments directly associated with a node here.
+        const potentialDocComment = node.leadingComments[node.leadingComments.length - 1];
+        if (potentialDocComment && potentialDocComment.kind === 'commentblock' && potentialDocComment.value.startsWith('/**')) {
+          docComment = potentialDocComment.value; // Store the raw comment text
+          this.log(`[AST] Helper: Found potential PHP DocBlock for ${nodeName || node.kind}`);
+          try {
+              const parsedDoc = doctrine.parse(docComment, { 
+                  unwrap: false, // Keep /** */ for raw storage if needed, parsing works anyway
+                  sloppy: true, 
+                  tags: null 
+              });
+              summary = parsedDoc.description || "";
+              // Initialize docParams here before the loop
+              docParams = []; 
+              docReturnType = null; // Initialize return type object
 
-      // Existing Signature Parameter logic
+              parsedDoc.tags.forEach(tag => {
+                  switch (tag.title) {
+                      case 'param':
+                          docParams.push({
+                              name: tag.name || "",
+                              type: tag.type ? doctrine.type.stringify(tag.type) : "",
+                              description: tag.description || ""
+                          });
+                          break;
+                      case 'return':
+                          docReturnType = {
+                              type: tag.type ? doctrine.type.stringify(tag.type) : "",
+                              description: tag.description || ""
+                          };
+                          break;
+                      case 'deprecated':
+                          isDeprecated = true;
+                          break;
+                      // Add other tags as needed
+                  }
+              });
+               this.log(`[AST] Helper: Parsed PHP DocBlock - ${docParams.length} params, ${docReturnType ? 'return specified' : 'no return'}`);
+          } catch (e) {
+              this.log(`\x1b[33m[AST] Helper [WARN]\x1b[0m Failed to parse PHP DocBlock comment for ${nodeName || node.kind}: ${e.message}`);
+          }
+        }
+      }
+      // --- End Re-implement DocBlock Parsing ---
+
+      // --- Re-implement Signature Parameter logic ---
+      signatureParams = []; // Ensure initialization
       if (node.params && Array.isArray(node.params)) {
-        // ... (assigns to initialized signatureParams) ...
+          node.params.forEach(param => {
+              let paramType = "";
+              if (param.type) {
+                  if (typeof param.type === 'string') { // Simple type hint like "string"
+                     paramType = param.type;
+                  } else if (param.type.kind === 'name') { // Object type hint like new Request()
+                     paramType = param.type.name;
+                  } else if (param.type.kind === 'nullabletype') { // Nullable type like ?string
+                     paramType = `?${param.type.name}`;
+                  } else {
+                     paramType = param.type.kind; // Fallback for other kinds (union, intersection)
+                  }
+              }
+              signatureParams.push({
+                  name: param.name?.name || (typeof param.name === 'string' ? param.name : ''),
+                  type: paramType,
+                  byRef: param.byref || false,
+                  isVariadic: param.variadic || false,
+                  // Default value requires inspecting param.value, omitted for simplicity now
+              });
+          });
+           this.log(`[AST] Helper: Parsed ${signatureParams.length} PHP signature parameters.`);
       }
+      // --- End Re-implement Signature Parameter logic ---
 
-      // Existing Signature Return Type logic
+      // --- Re-implement Signature Return Type logic ---
+      signatureReturnType = ""; // Ensure initialization
       if (node.returnType) {
-        // ... (assigns to initialized signatureReturnType) ...
+          if (typeof node.returnType === 'string') {
+              signatureReturnType = node.returnType;
+          } else if (node.returnType.kind === 'name') {
+              signatureReturnType = node.returnType.name;
+          } else if (node.returnType.kind === 'nullabletype') {
+              signatureReturnType = `?${node.returnType.name}`;
+          } else {
+             signatureReturnType = node.returnType.kind;
+          }
+          this.log(`[AST] Helper: Parsed PHP signature return type: ${signatureReturnType}`);
       }
+      // --- End Re-implement Signature Return Type logic ---
 
-      // Existing Class/Trait detail logic
+      // --- Re-implement Class/Trait detail logic ---
+      extendsClassName = ""; // Ensure initialization
+      implementsInterfaces = [];
+      usesTraits = [];
       if (['class', 'interface', 'trait'].includes(node.kind)) {
-        // ... (assigns to initialized extendsClassName, implementsInterfaces, usesTraits) ...
+          if (node.extends) {
+             extendsClassName = node.extends.name || "";
+          }
+          if (node.implements && Array.isArray(node.implements)) {
+             implementsInterfaces = node.implements.map(impl => impl.name || "");
+          }
+          if (node.body && Array.isArray(node.body)) {
+             usesTraits = node.body
+                .filter(stmt => stmt.kind === 'usetrait')
+                .flatMap(stmt => stmt.traits.map(trait => trait.name || ""));
+          }
+           this.log(`[AST] Helper: Parsed PHP class details - Extends: ${extendsClassName || 'N/A'}, Implements: ${implementsInterfaces.join(', ') || 'N/A'}, Uses: ${usesTraits.join(', ') || 'N/A'}`);
       }
+      // --- End Re-implement Class/Trait detail logic ---
 
-      // Existing Modifier logic
+      // --- Re-implement Modifier logic ---
+      modifiers = {}; // Ensure initialization
       if (['class', 'interface', 'trait', 'method', 'property', 'classconstant'].includes(node.kind) && node.flags !== undefined) {
-        // ... (populates initialized modifiers object) ...
+          modifiers = {
+              isFinal: (node.flags & 1) !== 0 || (node.flags & 4) !== 0, // abstract & final are mutually exclusive, final takes precedence (flag 4) over abstract (flag 1)
+              isAbstract: (node.flags & 1) !== 0 && !(node.flags & 4), // Must be abstract (1) and not final (4)
+              isStatic: (node.flags & 16) !== 0,
+              visibility: (node.flags & 2) !== 0 ? 'public' : ((node.flags & 4) !== 0 ? 'protected' : ((node.flags & 8) !== 0 ? 'private' : 'public')) // Default to public if no flag
+              // Note: Visibility flags for PHP are complex (public=2, protected=4, private=8), using simplified logic here
+          };
+           this.log(`[AST] Helper: Parsed PHP modifiers: ${JSON.stringify(modifiers)}`);
       }
+      // --- End Re-implement Modifier logic ---
 
-      // Existing Metadata Consolidation logic
+      // Metadata Consolidation logic
       const finalParameters = signatureParams.map(sigParam => {
-        // ... (uses initialized variables) ...
+        const docParam = docParams.find(dp => dp.name === sigParam.name);
+        return {
+            name: sigParam.name,
+            type: sigParam.type || docParam?.type || "", // Prefer signature type
+            description: docParam?.description || "", // Only from DocBlock
+            byRef: sigParam.byRef,
+            isVariadic: sigParam.isVariadic
+        };
       });
+      // Add any params found only in DocBlock (e.g., @param $unusedVar)
+      docParams.forEach(docParam => {
+          if (!finalParameters.some(fp => fp.name === docParam.name)) {
+              finalParameters.push({
+                  name: docParam.name,
+                  type: docParam.type || "",
+                  description: docParam.description || "",
+                  byRef: false, // Cannot determine from DocBlock only
+                  isVariadic: false // Cannot determine from DocBlock only
+              });
+          }
+      });
+
       const finalReturnType = signatureReturnType || docReturnType?.type || "";
       const finalReturnDescription = docReturnType?.description || "";
 
