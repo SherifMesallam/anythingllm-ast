@@ -106,8 +106,8 @@ const FULL_LANCEDB_SCHEMA = new arrow.Schema([
     new arrow.Field("usesTraits", new arrow.Utf8(), true), // Stored as stringified JSON
 
     // WP Hook Metadata
-    new arrow.Field("registersHooks", new arrow.Utf8(), true), // Stored as stringified JSON
-    new arrow.Field("triggersHooks", new arrow.Utf8(), true), // Stored as stringified JSON
+    new arrow.Field("registersHooks", new arrow.Utf8(), true), // Stringified JSON array: [{hookName, callback, type, priority, acceptedArgs}]
+    new arrow.Field("triggersHooks", new arrow.Utf8(), true), // Stringified JSON array: [{hookName, type}]
 
     // CSS Metadata
     new arrow.Field("selector", new arrow.Utf8(), true),

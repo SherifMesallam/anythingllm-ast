@@ -42,6 +42,7 @@
     "@zilliz/milvus2-sdk-node": "^2.3.5",
     "acorn": "^8.14.1",
     "acorn-walk": "^8.3.4",
+    "acorn-jsx": "^5.3.2",
     "adm-zip": "^0.5.16",
     "apache-arrow": "19.0.0",
     "bcrypt": "^5.1.0",

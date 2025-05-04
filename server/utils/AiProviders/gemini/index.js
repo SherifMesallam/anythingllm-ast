@@ -157,6 +157,7 @@ class GeminiLLM {
 
         // --- Build the formatted string for this chunk ---
         let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
+        formattedChunk += `Source File: ${relevantMeta.file}\n`;
         if (relevantMeta.language) formattedChunk += `Language: ${relevantMeta.language}\n`;
         if (relevantMeta.featureContext) formattedChunk += `Feature Context: ${relevantMeta.featureContext}\n`;
         if (relevantMeta.type) formattedChunk += `Element Type: ${relevantMeta.type}\n`;
@@ -175,7 +176,7 @@ class GeminiLLM {
             if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
             if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
             if (parsedModifiers.visibility) formattedChunk += `Visibility: ${parsedModifiers.visibility}\n`;
-            // ... (other modifier flags, deprecated, summary, parameters, return, hooks formatting remains same)
+            // ... (other modifier flags, deprecated, summary, parameters, return, hooks formatting needs placing)
         }
         
         if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
@@ -238,7 +239,12 @@ class GeminiLLM {
         }
 
         if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
-        formattedChunk += `--- Code/Text ---\n${text}\n`; 
+        
+        // --- Clean the text content --- 
+        const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
+        // --- End text cleaning ---
+        
+        formattedChunk += `--- Code/Text ---\n${cleanedText}\n`; // <-- Use cleanedText 
         formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`; 
 
         return formattedChunk;

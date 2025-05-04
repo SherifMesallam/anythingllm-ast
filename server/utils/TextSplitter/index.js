@@ -176,8 +176,8 @@ class TextSplitter {
       const fileExtension = path.extname(config.filename).toLowerCase();
       this.log(`#setChunkingStrategy: Filename detected (${config.filename}), attempting language-specific strategy for extension ${fileExtension}.`);
 
-      if (fileExtension === '.js') {
-        this.log("#setChunkingStrategy: Using AST strategy for JavaScript.");
+      if (fileExtension === '.js' || fileExtension === '.jsx') {
+        this.log("#setChunkingStrategy: Using AST strategy for JavaScript/JSX.");
         return 'ast-js';
       } else if (fileExtension === '.php') {
         this.log("#setChunkingStrategy: Using AST strategy for PHP.");
@@ -222,83 +222,56 @@ class TextSplitter {
       let astNodesToChunk /*: ChunkWithMetadata[] */ = [];
 
       if (language === 'js') {
-        this.log("[AST] #splitTextWithAST: Attempting to parse JavaScript...");
+        this.log("[AST] #splitTextWithAST: Attempting to parse JavaScript/JSX...");
         const acorn = await import('acorn');
+        const jsx = (await import('acorn-jsx')).default; // Import jsx plugin
         const walk = await import('acorn-walk');
+        const base = walk.base; // <-- Import the base visitor set
 
         // Use acorn-walk for easier traversal, especially for finding methods within classes
-        const ast = acorn.parse(documentText, {
+        // Inject the JSX plugin into Acorn
+        const ASTParser = acorn.Parser.extend(jsx());
+        const ast = ASTParser.parse(documentText, {
           sourceType: "module",
           ecmaVersion: "latest",
           locations: true,
           ranges: true // Required by some walkers or for easier text extraction
         });
 
-        this.log(`[AST] #splitTextWithAST: Successfully parsed JS AST. Found ${ast.body?.length || 0} top-level nodes.`);
+        this.log(`[AST] #splitTextWithAST: Successfully parsed JS/JSX AST. Found ${ast.body?.length || 0} top-level nodes.`);
 
-        // Use acorn-walk to visit relevant nodes
-        walk.simple(ast, {
-          // Top-level functions, classes, variables
-          FunctionDeclaration: (node) => {
-            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-          },
-          ClassDeclaration: (node) => {
-            const className = node.id?.name || null;
-            // Add the class definition itself as a chunk
-            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
+        // Capture 'this.log' correctly bound to the instance
+        const log = this.log.bind(this);
+        // Capture '#addJsNodeToChunks' correctly bound to the instance
+        const addJsNode = this.#addJsNodeToChunks.bind(this);
+        
+        // Define visitors for walk.recursive
+        const visitors = {
+            FunctionDeclaration(node, state, c) { 
+                log(`[AST Walker] Visiting FunctionDeclaration: ${node.id?.name}`); 
+                addJsNode(node, documentText, astNodesToChunk); 
+                // Don't call c(node, state) here, as we are handling this node entirely.
+            },
+            ClassDeclaration(node, state, c) { 
+                log(`[AST Walker] Visiting ClassDeclaration: ${node.id?.name}`); 
+                addJsNode(node, documentText, astNodesToChunk);
+                // If we wanted to process methods within the class here, we could:
+                // walk.recursive(node.body, state, { MethodDefinition: visitors.MethodDefinition }, base); 
+                // For now, we let the top-level recursive call handle finding methods if needed.
+            },
+            MethodDefinition(node, state, c) { 
+                 log(`[AST Walker] Visiting MethodDefinition: ${node.key?.name}`); 
+                 addJsNode(node, documentText, astNodesToChunk);
+                 // Don't call c(node, state)
+            },
+            // Let the 'base' handle traversing into other nodes
+        };
 
-            // Walk the class body for methods
-            if (node.body && node.body.body) {
-              node.body.body.forEach(classElement => {
-                if (classElement.type === 'MethodDefinition') {
-                  this.#addJsNodeToChunks(classElement, documentText, astNodesToChunk, className);
-                }
-              });
-            }
-          },
-          VariableDeclaration: (node) => {
-            // Could potentially iterate node.declarations if needed
-            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-          },
-          // Handle top-level exports containing the above
-          ExportNamedDeclaration: (node) => {
-            if (node.declaration) {
-              // Need to determine type of declaration and call appropriate handler or generic one
-              if (node.declaration.type === 'FunctionDeclaration' || node.declaration.type === 'ClassDeclaration' || node.declaration.type === 'VariableDeclaration') {
-                // Recursively handle or extract logic from specific handlers
-                // For now, just add the exported declaration as a chunk
-                this.#addJsNodeToChunks(node.declaration, documentText, astNodesToChunk, null);
-                // TODO: If it's a class, need to walk its body for methods like above
-              } else {
-                // Add the export statement itself if declaration is not chunkable type
-                this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-              }
-            } else {
-              // Handle export { ... } case if necessary, chunk the whole statement
-              this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-            }
-          },
-          ExportDefaultDeclaration: (node) => {
-            if (node.declaration) {
-              // Similar logic as ExportNamedDeclaration
-              if (node.declaration.type === 'FunctionDeclaration' || node.declaration.type === 'ClassDeclaration' || node.declaration.type === 'VariableDeclaration') {
-                this.#addJsNodeToChunks(node.declaration, documentText, astNodesToChunk, null);
-                // TODO: If it's a class, need to walk its body for methods
-              } else {
-                // Chunk the export default statement + its expression/literal
-                this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-              }
-            }
-          },
-          // Catch other top-level statements (like imports, expressions)
-          ExpressionStatement: (node) => {
-            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-          },
-          ImportDeclaration: (node) => {
-            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-          }
-          // Add other node types as needed
-        });
+        // Use walk.recursive for potentially better handling of custom + base visitors
+        this.log("[AST] Starting walk.recursive...");
+        walk.recursive(ast, this, visitors, base);
+        this.log("[AST] Finished walk.recursive.");
+        // --- END MODIFIED JS AST TRAVERSAL ---
 
       } else if (language === 'php') {
         this.log("[AST] #splitTextWithAST: Attempting to parse PHP...");
@@ -312,6 +285,61 @@ class TextSplitter {
 
         ast.children.forEach((node, index) => {
           this.log(`[AST] #splitTextWithAST: Processing PHP AST node ${index + 1}/${ast.children.length} - Kind: ${node.kind}`);
+
+          // --- BEGIN HOOK DETECTION --- 
+          let isHookCall = false;
+          if (node.kind === 'expressionstatement' && node.expression.kind === 'call') {
+            const call = node.expression;
+            if (call.what.kind === 'name') {
+              const funcName = call.what.name;
+              const nodeStartLine = node.loc?.start?.line || null;
+              const nodeEndLine = node.loc?.end?.line || null;
+              const nodeText = this.#getCodeFromRange(documentText, node.loc?.start?.offset, node.loc?.end?.offset);
+              let hookMetadata = {
+                  sourceType: 'ast',
+                  language: 'php',
+                  filePath: this.config.filename || "",
+                  startLine: nodeStartLine,
+                  endLine: nodeEndLine,
+                  featureContext: this.#featureContext || "", // Add feature context
+                  registersHooks: [], // Initialize as empty array
+                  triggersHooks: [], // Initialize as empty array
+              };
+
+              if (['add_action', 'add_filter'].includes(funcName)) {
+                  isHookCall = true;
+                  hookMetadata.nodeType = 'hookRegistration';
+                  const hookName = call.arguments[0]?.value || 'unknown_hook'; // Arg 0: Hook name (string literal)
+                  // Use #getCodeFromRange for the callback argument node
+                  const callbackNode = call.arguments[1];
+                  const callback = callbackNode ? this.#getCodeFromRange(documentText, callbackNode.loc?.start?.offset, callbackNode.loc?.end?.offset) : 'unknown_callback';
+                  const priority = call.arguments[2]?.value || 10; // Arg 2: Priority
+                  const acceptedArgs = call.arguments[3]?.value || 1; // Arg 3: Accepted Args
+                  hookMetadata.registersHooks.push({ 
+                      hookName, 
+                      callback, 
+                      type: funcName === 'add_action' ? 'action' : 'filter', 
+                      priority, 
+                      acceptedArgs 
+                  });
+                  this.log(`[AST] Detected Hook Registration: ${funcName}('${hookName}')`);
+                  astNodesToChunk.push({ text: nodeText, metadata: hookMetadata });
+              } else if (['do_action', 'apply_filters'].includes(funcName)) {
+                  isHookCall = true;
+                  hookMetadata.nodeType = 'hookTrigger';
+                  const hookName = call.arguments[0]?.value || 'unknown_hook'; // Arg 0: Hook name
+                   hookMetadata.triggersHooks.push({ 
+                      hookName, 
+                      type: funcName === 'do_action' ? 'action' : 'filter'
+                  });
+                  this.log(`[AST] Detected Hook Trigger: ${funcName}('${hookName}')`);
+                  astNodesToChunk.push({ text: nodeText, metadata: hookMetadata });
+              }
+            }
+          }
+
+          if (isHookCall) return; // Skip generic processing if it was a hook call
+          // --- END HOOK DETECTION --- 
 
           // Check for Class or Trait context first
           if (node.kind === 'class' || node.kind === 'trait') {
@@ -407,13 +435,43 @@ class TextSplitter {
       this.log(`[AST] #splitTextWithAST: Identified ${astNodesToChunk.length} potential chunks from AST traversal for ${language}.`);
       this.log(`[AST] #splitTextWithAST: Now checking potential chunks against chunkSize: ${chunkSize}`);
 
-      // Process potential chunks for size limits
-      for (const chunkInfo of astNodesToChunk) { // chunkInfo is now { text, metadata }
-        this.log(`[AST] #splitTextWithAST: Processing potential chunk (Type: ${chunkInfo.metadata.nodeType}, Lines: ${chunkInfo.metadata.startLine}-${chunkInfo.metadata.endLine}), length ${chunkInfo.text.length}.`);
-        if (chunkInfo.text.length > chunkSize) {
-          this.log(`\x1b[33m[AST] [WARN]\x1b[0m AST chunk (lines ${chunkInfo.metadata.startLine}-${chunkInfo.metadata.endLine}) for ${language} exceeds chunkSize (${chunkInfo.text.length}/${chunkSize}). Falling back to recursive splitting for this specific chunk.`);
+      // --- BEGIN FALLBACK CHECK ---
+      // If AST parsing succeeded but yielded no specific chunks (e.g., file only has top-level vars/expressions),
+      // fall back to recursive splitting for the whole document.
+      if (astNodesToChunk.length === 0 && documentText.trim().length > 0) {
+          this.log(`\x1b[33m[AST] [WARN]\x1b[0m AST strategy for ${language} found no chunkable nodes (Functions/Classes). Falling back to recursive splitting for the entire document.`);
           const recursiveSplitter = this.#getRecursiveSplitter();
-          const subChunks = await recursiveSplitter.splitText(chunkInfo.text);
+          const textChunks = await recursiveSplitter.splitText(documentText);
+          this.log(`[AST] #splitTextWithAST: Recursive fallback for entire document generated ${textChunks.length} chunks.`);
+          // Wrap recursive string chunks into the standard object format
+          textChunks.forEach(chunk => {
+            if (chunk.trim()) { // Ensure chunk is not just whitespace
+               finalChunks.push({
+                 text: chunk,
+                 metadata: {
+                   sourceType: 'recursive', // Indicate it was pure recursive
+                   startLine: 0, // No specific node lines
+                   endLine: 0,
+                   language: language, // Keep language context
+                   featureContext: this.#featureContext || "",
+                   filePath: this.config.filename || ""
+                 }
+               });
+            }
+          });
+          // Skip the AST node size processing loop below
+          astNodesToChunk = []; // Clear this to prevent entering the next loop
+      }
+      // --- END FALLBACK CHECK ---
+
+      // Now, process the gathered astNodesToChunk (if any)
+      this.log(`[AST] #splitTextWithAST: Processing ${astNodesToChunk.length} potential AST node chunks for size.`);
+      for (const nodeChunk of astNodesToChunk) {
+        this.log(`[AST] #splitTextWithAST: Processing potential chunk (Type: ${nodeChunk.metadata.nodeType}, Lines: ${nodeChunk.metadata.startLine}-${nodeChunk.metadata.endLine}), length ${nodeChunk.text.length}.`);
+        if (nodeChunk.text.length > chunkSize) {
+          this.log(`\x1b[33m[AST] [WARN]\x1b[0m AST chunk (lines ${nodeChunk.metadata.startLine}-${nodeChunk.metadata.endLine}) for ${language} exceeds chunkSize (${nodeChunk.text.length}/${chunkSize}). Falling back to recursive splitting for this specific chunk.`);
+          const recursiveSplitter = this.#getRecursiveSplitter();
+          const subChunks = await recursiveSplitter.splitText(nodeChunk.text);
           this.log(`[AST] #splitTextWithAST: Recursive fallback generated ${subChunks.length} sub-chunks for oversized AST node.`);
           // Wrap sub-chunks in metadata structure
           subChunks.forEach(subChunkText => {
@@ -421,7 +479,7 @@ class TextSplitter {
               finalChunks.push({
                 text: subChunkText,
                 metadata: {
-                  ...chunkInfo.metadata,
+                  ...nodeChunk.metadata,
                   featureContext: this.#featureContext,
                   sourceType: 'ast-recursive-fallback',
                   isSubChunk: true,
@@ -431,10 +489,10 @@ class TextSplitter {
             }
           });
         } else {
-          this.log(`[AST] #splitTextWithAST: AST chunk (lines ${chunkInfo.metadata.startLine}-${chunkInfo.metadata.endLine}) is within size limit. Adding directly.`);
+          this.log(`[AST] #splitTextWithAST: AST chunk (lines ${nodeChunk.metadata.startLine}-${nodeChunk.metadata.endLine}) is within size limit. Adding directly.`);
           // Add feature context to the existing metadata before pushing
-          chunkInfo.metadata.featureContext = this.#featureContext;
-          finalChunks.push(chunkInfo); // Push the whole { text, metadata } object
+          nodeChunk.metadata.featureContext = this.#featureContext;
+          finalChunks.push(nodeChunk); // Push the whole { text, metadata } object
         }
       }
 
@@ -462,8 +520,14 @@ class TextSplitter {
     return finalChunks.filter(chunkObject => !!chunkObject.text.trim()); // Filter empty text chunks
   }
 
+  // Helper to get code snippet from start/end positions
+  #getCodeFromRange(text, start, end) {
+    if (start === undefined || end === undefined) return "";
+    return text.substring(start, end);
+  }
+
   // Helper to add JS node chunk with metadata
-  #addJsNodeToChunks(node, documentText, chunkArray, parentName) {
+  #addJsNodeToChunks(node, documentText, chunkArray, parentName = null) {
     if (node?.loc && node.start !== undefined && node.end !== undefined) {
       const start = node.start;
       const end = node.end;
@@ -523,7 +587,7 @@ class TextSplitter {
   }
 
   // Helper to add PHP node chunk with metadata
-  #addPhpNodeToChunks(node, documentText, chunkArray, parentName) {
+  #addPhpNodeToChunks(node, documentText, chunkArray, parentName = null) {
     // --- BEGIN Initializations ---
     let docComment = "";
     let summary = "";
@@ -617,6 +681,11 @@ class TextSplitter {
     } else {
       this.log(`[AST] Helper: Skipping PHP Node (Kind: ${node?.kind}) - No location/offset info.`);
     }
+  }
+
+  // Helper to add CSS node chunk with metadata
+  #addCssNodeToChunks(node, documentText, chunkArray) {
+     // ... rest of #addCssNodeToChunks logic remains unchanged ...
   }
 
   // New private method to determine feature context from filename/path
