@@ -228,16 +228,27 @@ class TextSplitter {
         const jsx = (await import('acorn-jsx')).default; // Import jsx plugin
         const walk = await import('acorn-walk'); // <-- Re-import acorn-walk
 
+        // Array to hold comments collected during parsing
+        const comments = [];
+
         // Inject the JSX plugin into Acorn
         const ASTParser = acorn.Parser.extend(jsx());
         const ast = ASTParser.parse(documentText, {
           sourceType: "module",
           ecmaVersion: "latest",
           locations: true,
-          ranges: true // Essential for start/end offsets
+          ranges: true, // Essential for start/end offsets
+          // Add onComment callback to collect comments
+          onComment: (isBlock, text, start, end, startLoc, endLoc) => {
+              if (isBlock) { // We are primarily interested in block comments for JSDoc
+                  comments.push({ type: 'Block', value: text, start, end, loc: { start: startLoc, end: endLoc } });
+              }
+              // Optionally collect line comments too if needed later
+              // else { comments.push({ type: 'Line', value: text, start, end, loc: { start: startLoc, end: endLoc } }); }
+          }
         });
 
-        this.log(`[AST] #splitTextWithAST: Successfully parsed JS/JSX AST. Found ${ast.body?.length || 0} top-level nodes.`);
+        this.log(`[AST] #splitTextWithAST: Successfully parsed JS/JSX AST. Found ${ast.body?.length || 0} top-level nodes. Collected ${comments.length} block comments.`);
 
         // --- REVISED JS AST TRAVERSAL - Using acorn-walk for full coverage + scope ---
         this.log("[AST Walk] Starting AST walk for full coverage...");
@@ -307,6 +318,79 @@ class TextSplitter {
                     actualNodeType = node.init.type;
                 }
 
+                // --- JSDoc Parsing Logic ---
+                let docComment = "";
+                let summary = "";
+                let parameters = []; // Will hold { name, type, description }
+                let returnInfo = { type: "", description: "" }; // Will hold { type, description }
+                let isDeprecated = false;
+
+                // Find the closest preceding block comment for JSDoc
+                let relevantComment = null;
+                let minDistance = Infinity;
+
+                for (const comment of comments) {
+                    // Check if comment ends before the node starts
+                    if (comment.end < node.start) {
+                        // Check whitespace distance between comment end and node start
+                        const distance = node.start - comment.end;
+                        const interveningText = documentText.substring(comment.end, node.start);
+                        // Allow only whitespace between comment and node
+                        if (interveningText.trim() === '' && distance < minDistance) {
+                            // Must be a JSDoc style comment /** ... */
+                            if (comment.value.startsWith('*')) {
+                                relevantComment = comment;
+                                minDistance = distance;
+                            }
+                        }
+                    }
+                }
+
+                if (relevantComment) {
+                    this.log(`[AST Walk] Found potential JSDoc comment for ${nodeName || actualNodeType} at lines ${relevantComment.loc.start.line}-${relevantComment.loc.end.line}`);
+                    docComment = `/**${relevantComment.value}*/`; // Reconstruct full comment text
+                    try {
+                        const parsedDoc = doctrine.parse(docComment, { 
+                            unwrap: true, // Remove /** */
+                            sloppy: true, // Tolerate minor errors
+                            tags: null, // Process all known tags
+                            lineNumbers: true // Add line numbers to tags
+                        });
+                        
+                        summary = parsedDoc.description || "";
+
+                        parsedDoc.tags.forEach(tag => {
+                            switch (tag.title) {
+                                case 'param':
+                                case 'parameter':
+                                case 'arg':
+                                case 'argument':
+                                    parameters.push({
+                                        name: tag.name || "",
+                                        type: tag.type ? doctrine.type.stringify(tag.type) : "",
+                                        description: tag.description || ""
+                                    });
+                                    break;
+                                case 'return':
+                                case 'returns':
+                                    returnInfo.type = tag.type ? doctrine.type.stringify(tag.type) : "";
+                                    returnInfo.description = tag.description || "";
+                                    break;
+                                case 'deprecated':
+                                    isDeprecated = true;
+                                    // Could potentially capture deprecation message from tag.description
+                                    break;
+                                // Add cases for other tags like @throws, @see, @example if needed
+                            }
+                        });
+                        this.log(`[AST Walk] Successfully parsed JSDoc: ${parameters.length} params, ${returnInfo.type ? 'return specified' : 'no return'}`);
+                    } catch (e) {
+                        this.log(`\x1b[33m[AST Walk] [WARN]\x1b[0m Failed to parse JSDoc comment for ${nodeName || actualNodeType}: ${e.message}`);
+                        // Keep docComment raw if parsing fails
+                    }
+                }
+                // --- End JSDoc Parsing ---
+
                 chunkMetadata = {
                     sourceType: 'ast',
                     language: 'js',
@@ -316,13 +400,13 @@ class TextSplitter {
                     scope: state.currentScope || 'global',
                     startLine: node.loc ? node.loc.start.line : this.#getLineNumber(documentText, node.start),
                     endLine: node.loc ? node.loc.end.line : this.#getLineNumber(documentText, node.end),
-                    // JSDoc/detailed metadata fields - initialized empty for now
-                    docComment: "",
-                    summary: "",
-                    parameters: [],
-                    returnType: "",
-                    returnDescription: "",
-                    isDeprecated: false,
+                    // Populate with parsed JSDoc data
+                    docComment: docComment,
+                    summary: summary,
+                    parameters: parameters, // Array of objects
+                    returnType: returnInfo.type,
+                    returnDescription: returnInfo.description,
+                    isDeprecated: isDeprecated,
                     modifiers: {}, // TODO: Populate if needed
                     extendsClass: extendsClassName || "",
                     featureContext: this.#featureContext || ""
