@@ -101,31 +101,95 @@ class GeminiLLM {
         const text = doc.text || doc.pageContent || ""; // Get the text content
         const metadata = doc.metadata || doc; // Metadata might be top-level or nested
 
-        // Extract relevant metadata fields (adjust keys based on actual structure)
+        // --- Extract Existing and New Metadata ---
         const relevantMeta = {
-          file: metadata.title || metadata.filename || metadata.source || 'Unknown',
-          type: metadata.nodeType || (text.length > 0 ? 'Text' : 'Metadata'), // Default to 'Text' if text exists
-          name: metadata.nodeName || null,
-          lines: (metadata.startLine && metadata.endLine) ? `${metadata.startLine}-${metadata.endLine}` : null,
-          parent: metadata.parentName || null,
+          // Existing Fields
+          file: metadata.filePath || metadata.title || metadata.filename || metadata.source || 'Unknown', // Use filePath from AST if available
+          type: metadata.nodeType || (text.length > 0 ? 'Text' : 'Metadata'), // Use nodeType from AST
+          name: metadata.nodeName || null, // Use nodeName from AST
+          lines: (metadata.startLine && metadata.endLine) ? `${metadata.startLine}-${metadata.endLine}` : null, // Use start/endLine from AST
+          parent: metadata.parentName || null, // Use parentName from AST
           score: metadata.score?.toFixed(4) || null, // Include similarity score if available
-          // Add other potentially useful fields: language, isSubChunk, etc.
-        };
+          language: metadata.language || null, // e.g., 'php', 'js'
 
-        // Build the formatted string for this chunk
-        let formattedChunk = `--- Context Chunk ${i + 1} ---
-`;
+          // New Phase 1 Fields
+          featureContext: metadata.featureContext || null, // From path analysis
+          summary: metadata.summary || null, // From DocBlock
+          parameters: metadata.parameters || null, // Array from DocBlock/Signature [{name, type?, description?}]
+          returnType: metadata.returnType || null, // From DocBlock/Signature
+          returnDescription: metadata.returnDescription || null, // From DocBlock @return
+          visibility: metadata.modifiers?.visibility || null, // From AST Modifiers
+          isDeprecated: metadata.isDeprecated || false, // From DocBlock @deprecated
+          isStatic: metadata.modifiers?.isStatic || false, // From AST Modifiers
+          isAbstract: metadata.modifiers?.isAbstract || false, // From AST Modifiers
+          isFinal: metadata.modifiers?.isFinal || false, // From AST Modifiers
+          registersHooks: metadata.registersHooks || null, // Array from WP Hook analysis [{hookName, callback, type, priority, acceptedArgs}]
+          triggersHooks: metadata.triggersHooks || null, // Array from WP Hook analysis [{hookName, type}]
+
+          // Add other potentially useful fields from existing metadata if needed
+        };
+        // --- End Metadata Extraction ---
+
+
+        // --- Build the formatted string for this chunk ---
+        let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
         formattedChunk += `Source File: ${relevantMeta.file}\n`;
-        formattedChunk += `Element Type: ${relevantMeta.type}\n`;
-        if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
+        if (relevantMeta.language) formattedChunk += `Language: ${relevantMeta.language}\n`;
+        if (relevantMeta.featureContext) formattedChunk += `Feature Context: ${relevantMeta.featureContext}\n`; // New
+        if (relevantMeta.type) formattedChunk += `Element Type: ${relevantMeta.type}\n`; // Use nodeType primarily
+        if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`; // Use nodeName primarily
         if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
         if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
+        if (relevantMeta.visibility) formattedChunk += `Visibility: ${relevantMeta.visibility}\n`; // New
+        
+        // Add modifier flags if true
+        const modifierFlags = [];
+        if (relevantMeta.isStatic) modifierFlags.push('static');
+        if (relevantMeta.isAbstract) modifierFlags.push('abstract');
+        if (relevantMeta.isFinal) modifierFlags.push('final');
+        if (modifierFlags.length > 0) formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`; // New
+
+        if (relevantMeta.isDeprecated) formattedChunk += `Deprecated: Yes\n`; // New
+
+        // Add Summary if available
+        if (relevantMeta.summary) formattedChunk += `Summary: ${relevantMeta.summary}\n`; // New
+
+        // Format Parameters (if any)
+        if (relevantMeta.parameters && relevantMeta.parameters.length > 0) {
+           formattedChunk += `Parameters:\n`;
+           relevantMeta.parameters.forEach(p => {
+               const typeStr = p.type ? `: ${p.type}` : '';
+               const descStr = p.description ? ` - ${p.description}` : '';
+               formattedChunk += `  - ${p.name}${typeStr}${descStr}\n`;
+           });
+        } // New
+
+        // Format Return Info
+        if (relevantMeta.returnType) {
+            const descStr = relevantMeta.returnDescription ? ` - ${relevantMeta.returnDescription}` : '';
+            formattedChunk += `Returns: ${relevantMeta.returnType}${descStr}\n`;
+        } // New
+
+         // Format Registered Hooks (if any) - Basic formatting
+        if (relevantMeta.registersHooks && relevantMeta.registersHooks.length > 0) {
+            formattedChunk += `Registers Hooks:\n`;
+            relevantMeta.registersHooks.forEach(h => {
+                formattedChunk += `  - [${h.type}] ${h.hookName} -> ${h.callback} (P:${h.priority}, A:${h.acceptedArgs})\n`;
+            });
+        } // New
+
+        // Format Triggered Hooks (if any) - Basic formatting
+        if (relevantMeta.triggersHooks && relevantMeta.triggersHooks.length > 0) {
+            formattedChunk += `Triggers Hooks:\n`;
+            relevantMeta.triggersHooks.forEach(h => {
+                formattedChunk += `  - [${h.type}] ${h.hookName}\n`;
+            });
+        } // New
+
+
         if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
-        formattedChunk += `--- Code/Text ---
-`;
-        formattedChunk += `${text}\n`; // The actual code/text chunk
-        formattedChunk += `--- End Chunk ${i + 1} ---
-\n`; // Add double newline for separation
+        formattedChunk += `--- Code/Text ---\n${text}\n`; // Keep the actual code/text
+        formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`; // Add separator
 
         return formattedChunk;
       })

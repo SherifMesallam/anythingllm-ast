@@ -43,6 +43,7 @@ interface ChunkWithMetadata {
 class TextSplitter {
   #splitter;
   #chunkingStrategy;
+  #featureContext;
 
   constructor(config = {}) {
     /*
@@ -63,7 +64,9 @@ class TextSplitter {
     */
     this.config = config;
     this.#chunkingStrategy = this.#setChunkingStrategy(config);
+    this.#featureContext = this.#determineFeatureContext(config.filename);
     this.log(`Constructor: Determined chunking strategy: ${this.#chunkingStrategy}`);
+    this.log(`Constructor: Determined feature context: ${this.#featureContext}`);
     this.#splitter = null;
   }
 
@@ -346,12 +349,19 @@ class TextSplitter {
               finalChunks.push({
                 text: subChunkText,
                 // Inherit original AST node metadata but mark as fallback sub-chunk
-                metadata: { ...chunkInfo.metadata, sourceType: 'ast-recursive-fallback', isSubChunk: true }
+                metadata: {
+                  ...chunkInfo.metadata,
+                  featureContext: this.#featureContext,
+                  sourceType: 'ast-recursive-fallback',
+                  isSubChunk: true
+                }
               });
             }
           });
         } else {
           this.log(`[AST] #splitTextWithAST: AST chunk (lines ${chunkInfo.metadata.startLine}-${chunkInfo.metadata.endLine}) is within size limit. Adding directly.`);
+          // Add feature context to the existing metadata before pushing
+          chunkInfo.metadata.featureContext = this.#featureContext;
           finalChunks.push(chunkInfo); // Push the whole { text, metadata } object
         }
       }
@@ -368,7 +378,8 @@ class TextSplitter {
           metadata: {
             sourceType: 'recursive',
             startLine: null, // No line info from recursive splitter
-            endLine: null
+            endLine: null,
+            featureContext: this.#featureContext
           }
         });
       });
@@ -516,6 +527,55 @@ class TextSplitter {
     }
   }
 
+  // New private method to determine feature context from filename/path
+  #determineFeatureContext(filename = null) {
+    if (!filename || typeof filename !== 'string') {
+      this.log("#determineFeatureContext: No filename provided, cannot determine feature context.");
+      return null;
+    }
+
+    // Normalize path separators for consistency
+    const normalizedPath = filename.replace(/\\/g, '/');
+    const includesSegment = '/includes/';
+    const includesIndex = normalizedPath.indexOf(includesSegment);
+
+    if (includesIndex === -1) {
+      this.log(`#determineFeatureContext: Path "${normalizedPath}" does not contain "${includesSegment}". No feature context.`);
+      return null; // Not within the '/includes/' structure
+    }
+
+    // Get the part of the path *after* '/includes/'
+    const pathAfterIncludes = normalizedPath.substring(includesIndex + includesSegment.length);
+
+    // Split the remaining path into parts
+    const parts = pathAfterIncludes.split('/');
+
+    if (parts.length === 0 || parts[0] === '') {
+      // This case should ideally not happen if the path contains /includes/
+      // but handle defensively. Could imply file directly in includes?
+      this.log(`#determineFeatureContext: Path structure issue after "${includesSegment}" in "${normalizedPath}". Assigning 'core'.`);
+      return 'core';
+    }
+
+    // Check if the first part is empty or just the filename itself
+    // This happens if the file is directly inside /includes/ (e.g., /includes/init.php)
+    if (parts.length === 1 && parts[0] !== '') {
+         this.log(`#determineFeatureContext: File directly within "${includesSegment}" in "${normalizedPath}". Assigning 'core'.`);
+         return 'core';
+    }
+    
+    // If parts[0] is not empty, it's our feature name
+    if (parts[0] !== '') {
+      const featureName = parts[0];
+      this.log(`#determineFeatureContext: Extracted feature context "${featureName}" from "${normalizedPath}".`);
+      return featureName;
+    }
+    
+    // Fallback / Edge case - If the first part was empty for some reason
+    this.log(`#determineFeatureContext: Fallback case for "${normalizedPath}". Assigning 'core'.`);
+    return 'core';
+  }
+
   // Main method to split text - now returns Promise<ChunkWithMetadata[]>
   async splitText(documentText) {
     this.log(`splitText: Method entered. Strategy: ${this.#chunkingStrategy}`);
@@ -536,7 +596,8 @@ class TextSplitter {
         metadata: {
             sourceType: 'recursive',
             startLine: null, // No line info from recursive splitter
-            endLine: null
+            endLine: null,
+            featureContext: this.#featureContext
         }
       }));
     }
