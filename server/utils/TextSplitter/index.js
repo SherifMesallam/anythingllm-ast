@@ -466,8 +466,10 @@ class TextSplitter {
         const ast = parser.parseCode(documentText);
         this.log(`[AST] #splitTextWithAST: Successfully parsed PHP AST. Found ${ast.children?.length || 0} top-level nodes.`);
 
-        // Use forEach with .bind to ensure correct `this` context for the processing method
-        ast.children.forEach(this.#processPhpNode.bind(this, documentText, astNodesToChunk));
+        // Use forEach with an arrow function to ensure correct `this` and pass arguments explicitly
+        ast.children.forEach((node, index) => {
+          this.#processPhpNode(node, index, documentText, astNodesToChunk);
+        });
 
       } else if (language === 'css') { // <-- Add CSS block
         this.log("[AST] #splitTextWithAST: Attempting to parse CSS with PostCSS...");
