@@ -15,7 +15,7 @@ const WorkspaceChats = {
         data: {
           workspaceId,
           prompt,
-          response: JSON.stringify(response),
+          response: JSON.stringify(response, (key, value) => typeof value === 'bigint' ? value.toString() : value),
           user_id: user?.id || null,
           thread_id: threadId,
           api_session_id: apiSessionId,
@@ -24,7 +24,7 @@ const WorkspaceChats = {
       });
       return { chat, message: null };
     } catch (error) {
-      console.error(error.message);
+      console.error("[WorkspaceChats.new] Error:", error);
       return { chat: null, message: error.message };
     }
   },

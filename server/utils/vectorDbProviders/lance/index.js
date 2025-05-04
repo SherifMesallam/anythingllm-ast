@@ -6,11 +6,122 @@ const { storeVectorResult, cachedVectorInformation } = require("../../files");
 const { v4: uuidv4 } = require("uuid");
 const { sourceIdentifier } = require("../../chats");
 const { NativeEmbeddingReranker } = require("../../EmbeddingRerankers/native");
+const arrow = require("apache-arrow");
 
 /**
  * LancedDB Client connection object
  * @typedef {import('@lancedb/lancedb').Connection} LanceClient
  */
+
+// --- BEGIN DYNAMIC DIMENSION ---
+// Get the configured embedder and its dimension ONCE when the module loads.
+let embedderDimension = 768; // Default fallback
+let embedderName = 'Unknown';
+let embedderModel = 'Unknown';
+
+try {
+  const EmbedderEngine = getEmbeddingEngineSelection();
+  embedderName = EmbedderEngine?.constructor?.name || 'Unknown';
+  
+  // Attempt 1: Check for a direct vectorDimension property
+  if (EmbedderEngine && typeof EmbedderEngine.vectorDimension === 'number') {
+    embedderDimension = EmbedderEngine.vectorDimension;
+    console.log(`[INFO] LanceDB: Detected embedder dimension via property: ${embedderDimension}`);
+  } 
+  // Attempt 2: Specific logic for OpenAIEmbedder based on model name
+  else if (embedderName === 'OpenAiEmbedder' && EmbedderEngine.model) {
+      embedderModel = EmbedderEngine.model;
+      // Add known OpenAI model dimensions here
+      const openAiDimensions = {
+          'text-embedding-3-large': 3072,
+          'text-embedding-3-small': 1536,
+          'text-embedding-ada-002': 1536,
+          // Add other models as needed
+      };
+      if (openAiDimensions.hasOwnProperty(embedderModel)) {
+          embedderDimension = openAiDimensions[embedderModel];
+          console.log(`[INFO] LanceDB: Detected OpenAI dimension for model ${embedderModel}: ${embedderDimension}`);
+      } else {
+          console.warn(`[WARN] LanceDB: OpenAI model ${embedderModel} has unknown dimension. Falling back to default ${embedderDimension}.`);
+      }
+  } 
+  // Fallback if no dimension found
+  else {
+    console.warn(`[WARN] LanceDB: Could not detect embedder dimension automatically for ${embedderName}. Falling back to default ${embedderDimension}. Ensure EmbedderEngine instance has a 'vectorDimension' property or add model-specific logic.`);
+  }
+} catch (error) {
+  console.error(`[ERROR] LanceDB: Failed to get embedder dimension. Falling back to default ${embedderDimension}.`, error);
+}
+// --- END DYNAMIC DIMENSION ---
+
+// Helper function to create loggable submission data (no vectors)
+function cleanSubmissionsForLogging(submissions) {
+  if (!Array.isArray(submissions)) return submissions; // Safety check
+  return submissions.map(item => {
+    const { vector, ...rest } = item; // Destructure to remove vector
+    return rest; // Return object without the vector
+  });
+}
+
+// Define the explicit schema including all our metadata fields
+const FULL_LANCEDB_SCHEMA = new arrow.Schema([
+    new arrow.Field("id", new arrow.Utf8(), false),
+    // Use the detected embedderDimension here
+    new arrow.Field("vector", new arrow.FixedSizeList(embedderDimension, new arrow.Field("item", new arrow.Float32(), false)), false),
+    new arrow.Field("text", new arrow.Utf8(), false),
+
+    // Original Document Metadata (mostly strings, nullable)
+    new arrow.Field("url", new arrow.Utf8(), true),
+    new arrow.Field("title", new arrow.Utf8(), true),
+    new arrow.Field("docAuthor", new arrow.Utf8(), true),
+    new arrow.Field("description", new arrow.Utf8(), true),
+    new arrow.Field("docSource", new arrow.Utf8(), true),
+    new arrow.Field("chunkSource", new arrow.Utf8(), true),
+    new arrow.Field("published", new arrow.Utf8(), true),
+    new arrow.Field("wordCount", new arrow.Int64(), true),
+    new arrow.Field("token_count_estimate", new arrow.Int64(), true),
+
+    // TextSplitter Metadata
+    new arrow.Field("filePath", new arrow.Utf8(), true),
+    new arrow.Field("featureContext", new arrow.Utf8(), true),
+    new arrow.Field("sourceType", new arrow.Utf8(), true),
+    new arrow.Field("language", new arrow.Utf8(), true), // Ensure this is included!
+    new arrow.Field("startLine", new arrow.Int64(), true),
+    new arrow.Field("endLine", new arrow.Int64(), true),
+    new arrow.Field("isSubChunk", new arrow.Bool(), true),
+
+    // AST Specific Metadata
+    new arrow.Field("nodeType", new arrow.Utf8(), true),
+    new arrow.Field("nodeName", new arrow.Utf8(), true),
+    new arrow.Field("parentName", new arrow.Utf8(), true),
+    new arrow.Field("docComment", new arrow.Utf8(), true),
+    new arrow.Field("summary", new arrow.Utf8(), true),
+    new arrow.Field("parameters", new arrow.Utf8(), true), // Stored as stringified JSON
+    new arrow.Field("returnType", new arrow.Utf8(), true),
+    new arrow.Field("returnDescription", new arrow.Utf8(), true),
+    new arrow.Field("isDeprecated", new arrow.Bool(), true),
+    new arrow.Field("modifiers", new arrow.Utf8(), true), // Stored as stringified JSON
+    new arrow.Field("extendsClass", new arrow.Utf8(), true),
+    new arrow.Field("implementsInterfaces", new arrow.Utf8(), true), // Stored as stringified JSON
+    new arrow.Field("usesTraits", new arrow.Utf8(), true), // Stored as stringified JSON
+
+    // WP Hook Metadata
+    new arrow.Field("registersHooks", new arrow.Utf8(), true), // Stored as stringified JSON
+    new arrow.Field("triggersHooks", new arrow.Utf8(), true), // Stored as stringified JSON
+
+    // CSS Metadata
+    new arrow.Field("selector", new arrow.Utf8(), true),
+    new arrow.Field("atRuleName", new arrow.Utf8(), true),
+    new arrow.Field("atRuleParams", new arrow.Utf8(), true),
+]);
+
+// --- BEGIN MINIMAL SCHEMA FOR TESTING ---
+const MINIMAL_LANCEDB_SCHEMA = new arrow.Schema([
+    new arrow.Field("id", new arrow.Utf8(), false),
+    new arrow.Field("vector", new arrow.FixedSizeList(embedderDimension, new arrow.Field("item", new arrow.Float32(), false)), false),
+    new arrow.Field("text", new arrow.Utf8(), false), 
+]);
+// --- END MINIMAL SCHEMA FOR TESTING ---
 
 const LanceDb = {
   uri: `${
@@ -105,8 +216,19 @@ const LanceDb = {
       10,
       Math.min(50, Math.ceil(totalEmbeddings * 0.1))
     );
+    const METADATA_FIELDS_TO_SELECT = [
+        'id', 'text', 'url', 'title', 'docAuthor', 'description', 'docSource',
+        'chunkSource', 'published', 'wordCount', 'token_count_estimate',
+        'filePath', 'featureContext', 'sourceType', 'language', 'startLine', 'endLine',
+        'nodeType', 'nodeName', 'parentName', 'docComment', 'summary', 'parameters',
+        'returnType', 'returnDescription', 'isDeprecated', 'modifiers', 'extendsClass',
+        'implementsInterfaces', 'usesTraits', 'registersHooks', 'triggersHooks',
+        'selector', 'atRuleName', 'atRuleParams', 'isSubChunk'
+        // DO NOT include 'vector', '_vector', '_distance', 'rerank_score' here
+    ];
     const vectorSearchResults = await collection
       .vectorSearch(queryVector)
+      .select(METADATA_FIELDS_TO_SELECT)
       .distanceType("cosine")
       .limit(searchLimit)
       .toArray();
@@ -175,8 +297,19 @@ const LanceDb = {
       scores: [],
     };
 
+    const METADATA_FIELDS_TO_SELECT = [
+        'id', 'text', 'url', 'title', 'docAuthor', 'description', 'docSource',
+        'chunkSource', 'published', 'wordCount', 'token_count_estimate',
+        'filePath', 'featureContext', 'sourceType', 'language', 'startLine', 'endLine',
+        'nodeType', 'nodeName', 'parentName', 'docComment', 'summary', 'parameters',
+        'returnType', 'returnDescription', 'isDeprecated', 'modifiers', 'extendsClass',
+        'implementsInterfaces', 'usesTraits', 'registersHooks', 'triggersHooks',
+        'selector', 'atRuleName', 'atRuleParams', 'isSubChunk'
+        // DO NOT include 'vector', '_vector', '_distance', 'rerank_score' here
+    ];
     const response = await collection
       .vectorSearch(queryVector)
+      .select(METADATA_FIELDS_TO_SELECT)
       .distanceType("cosine")
       .limit(topN)
       .toArray();
@@ -234,15 +367,43 @@ const LanceDb = {
    */
   updateOrCreateCollection: async function (client, data = [], namespace) {
     const hasNamespace = await this.hasNamespace(namespace);
+
+    // --- BEGIN BOOLEAN VALUE LOGGING ---
+    console.log(`[DEBUG] LanceDB updateOrCreateCollection: Inspecting data for namespace '${namespace}' before write operation (Boolean fields):`);
+    data.forEach((record, index) => {
+      console.log(`  Record ${index + 1}/${data.length}: isSubChunk=${record.isSubChunk} (type: ${typeof record.isSubChunk}), isDeprecated=${record.isDeprecated} (type: ${typeof record.isDeprecated})`);
+    });
+    // --- END BOOLEAN VALUE LOGGING ---
+
     if (hasNamespace) {
       const collection = await client.openTable(namespace);
-      console.log(`[DEBUG] LanceDB updateOrCreateCollection: Calling collection.add for namespace '${namespace}' with ${data.length} records.`);
-      await collection.add(data);
+      console.log(`[DEBUG] LanceDB updateOrCreateCollection: Adding ${data.length} records to existing namespace '${namespace}'.`);
+      // When adding, we assume the schema (hopefully FULL) already exists.
+      // Data preparation should ensure compatibility with the FULL schema.
+      try {
+        await collection.add(data);
+        console.log(`[DEBUG] LanceDB updateOrCreateCollection: Added records successfully to existing namespace '${namespace}'.`);
+      } catch (addError) {
+        console.error(`[ERROR] LanceDB: Failed to add records to existing namespace '${namespace}'!`, addError);
+        console.error("[ERROR] LanceDB: Failing data for add (vectors excluded):", JSON.stringify(cleanSubmissionsForLogging(data), null, 2));
+        throw addError; // Re-throw
+      }
       return true;
     }
 
-    console.log(`[DEBUG] LanceDB updateOrCreateCollection: Calling client.createTable for namespace '${namespace}' with ${data.length} records.`);
-    await client.createTable(namespace, data);
+    // --- REVERT TESTING CHANGE: Use FULL schema for table creation ---
+    console.log(`[DEBUG] LanceDB updateOrCreateCollection: Creating table for namespace '${namespace}' with ${data.length} records using FULL explicit schema.`);
+    try {
+      // Pass the FULL schema when creating the table again
+      await client.createTable(namespace, data, { schema: FULL_LANCEDB_SCHEMA, mode: 'create' }); 
+      console.log(`[DEBUG] LanceDB updateOrCreateCollection: Table '${namespace}' created successfully with FULL explicit schema.`);
+    } catch (createError) {
+      console.error(`[ERROR] LanceDB: Failed to create table '${namespace}' with FULL explicit schema!`, createError);
+      // Log data without vectors if creation fails
+      console.error("[ERROR] LanceDB: Failing data for createTable (vectors excluded):", JSON.stringify(cleanSubmissionsForLogging(data), null, 2));
+      throw createError; // Re-throw
+    }
+    // --- END REVERT TESTING CHANGE ---
     return true;
   },
   hasNamespace: async function (namespace = null) {
@@ -390,23 +551,76 @@ const LanceDb = {
              text: chunksWithMetadata[i].text, // Still include the text for LangChain compatibility
           };
 
-          // Ensure metadata fields are suitable for LanceDB (e.g., no nested objects if not supported)
-          // Simple check for nested objects - adjust as needed for LanceDB limitations
+          // Ensure metadata fields are suitable for LanceDB
           for (const key in combinedMetadata) {
-             if (typeof combinedMetadata[key] === 'object' && combinedMetadata[key] !== null) {
-                console.log(`[WARN] LanceDB:addDocumentToNamespace - Converting metadata key ${key} to string as it was an object.`);
-                combinedMetadata[key] = JSON.stringify(combinedMetadata[key]);
-             } else if (Array.isArray(combinedMetadata[key])) {
-                console.log(`[WARN] LanceDB:addDocumentToNamespace - Converting array metadata key ${key} to string.`);
-                combinedMetadata[key] = JSON.stringify(combinedMetadata[key]); // Stringify arrays too
-             } else if (combinedMetadata[key] === null || combinedMetadata[key] === undefined) {
-                delete combinedMetadata[key]; // Remove null values if they cause issues
-             }
+            const fieldSchema = FULL_LANCEDB_SCHEMA.fields.find(f => f.name === key);
+            if (!fieldSchema) continue; // Skip keys not in our schema
+
+            const expectedType = fieldSchema.type.toString();
+            const currentValue = combinedMetadata[key];
+            const currentValueType = typeof currentValue;
+
+            // 1. Stringify objects/arrays if schema expects Utf8 (string)
+            if (expectedType === 'Utf8' && (Array.isArray(currentValue) || (currentValueType === 'object' && currentValue !== null))) {
+                 console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Stringifying field '${key}' (type: ${currentValueType}) because schema expects Utf8.`);
+                 combinedMetadata[key] = JSON.stringify(currentValue);
+            }
+            // 2. Convert null/undefined for nullable Utf8 fields to ""
+            else if (expectedType === 'Utf8' && fieldSchema.nullable && (currentValue === null || currentValue === undefined)) {
+                console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Converting null/undefined Utf8 field '${key}' to empty string "". Original Type: ${currentValueType}`);
+                combinedMetadata[key] = "";
+            }
+            // 3. Convert null/undefined for nullable Boolean fields to null (Arrow might handle null better than undefined)
+            else if (expectedType === 'Bool' && fieldSchema.nullable && currentValue === undefined) {
+                console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Converting undefined Boolean field '${key}' to null.`);
+                combinedMetadata[key] = null; 
+            }
+             // 4. Convert null/undefined for nullable Int64 fields to null
+            else if (expectedType.startsWith('Int') && fieldSchema.nullable && currentValue === undefined) {
+                console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Converting undefined Int field '${key}' to null.`);
+                combinedMetadata[key] = null; 
+            }
+            
+            // 5. Remove any remaining undefined fields (shouldn't happen with above conversions but good safety check)
+            if (combinedMetadata[key] === undefined) {
+                 console.log(`  [WARN] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Removing unexpected undefined field '${key}'.`);
+                 delete combinedMetadata[key];
+            }
           }
 
-          // --- BEGIN ADDED LOGGING ---
-          console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Metadata for chunk ${i + 1}/${vectorValues.length} (Vector ID: ${vectorRecord.id}):`, JSON.stringify(combinedMetadata, null, 2));
-          // --- END ADDED LOGGING ---
+          // --- BEGIN ENSURE ALL SCHEMA FIELDS EXIST WITH DEFAULTS ---
+          for (const field of FULL_LANCEDB_SCHEMA.fields) {
+            const key = field.name;
+            // Skip id, vector, text as they are handled separately/are not nullable in the same way
+            if (key === 'id' || key === 'vector' || key === 'text') continue;
+
+            if (!(key in combinedMetadata)) {
+              if (field.nullable) {
+                let defaultValue;
+                const fieldTypeStr = field.type.toString();
+                if (fieldTypeStr === 'Utf8') {
+                  defaultValue = "";
+                } else if (fieldTypeStr.startsWith('Int')) { // Covers Int8, Int16, Int32, Int64
+                  defaultValue = 0;
+                } else if (fieldTypeStr === 'Bool') {
+                  defaultValue = false;
+                } else {
+                  // Should not happen with our current schema, but log just in case
+                  console.warn(`  [WARN] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Missing nullable field '${key}' with unhandled type ${fieldTypeStr}. Setting to null.`);
+                  defaultValue = null; 
+                }
+                
+                if (defaultValue !== undefined) { // Add default if we determined one
+                  console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Adding missing nullable field '${key}' with default value: ${JSON.stringify(defaultValue)}`);
+                  combinedMetadata[key] = defaultValue;
+                }
+              } else {
+                 // Log if a *non-nullable* field (other than id/vector/text) is missing - indicates schema mismatch or upstream issue
+                 console.error(`  [ERROR] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Non-nullable field '${key}' defined in schema is MISSING from metadata!`);
+              }
+            }
+          }
+          // --- END ENSURE ALL SCHEMA FIELDS EXIST WITH DEFAULTS ---
 
           // ---
           // Skip chunks with empty text, as LanceDB errors on this.
@@ -445,6 +659,12 @@ const LanceDb = {
         const BATCH_SIZE = 10; // Keep batch size definition
         const totalCount = submissions.length;
         console.log(`LanceDB:addDocumentToNamespace - Total submissions to process: ${totalCount}`);
+
+        // --- BEGIN LOG SUBMISSIONS BEFORE WRITE ---
+        console.log(`[DEBUG] LanceDB:addDocumentToNamespace - Final submissions array before calling updateOrCreateCollection (vectors excluded):`);
+        console.log(JSON.stringify(cleanSubmissionsForLogging(submissions), null, 2));
+        // --- END LOG SUBMISSIONS BEFORE WRITE ---
+
         const { client } = await this.connect();
 
         if (totalCount > BATCH_SIZE) {
@@ -457,8 +677,9 @@ const LanceDb = {
                   console.log(`LanceDB:addDocumentToNamespace - Batch written successfully.`);
               } catch (batchError) {
                   console.error(`[ERROR] LanceDB: Failed to write batch! Batch Size: ${submissionBatch.length}`);
-                  console.error("[ERROR] LanceDB: Failing batch data:", JSON.stringify(submissionBatch, null, 2)); // Revert to simple logging
-                  throw batchError; // Re-throw to be caught by outer try/catch
+                  // Log cleaned data without vectors
+                  console.error("[ERROR] LanceDB: Failing batch data (vectors excluded):", JSON.stringify(cleanSubmissionsForLogging(submissionBatch), null, 2));
+                  throw batchError; // Re-throw
               }
           }
         } else if (totalCount > 0) {
@@ -469,8 +690,9 @@ const LanceDb = {
             console.log(`LanceDB:addDocumentToNamespace - Single submission successful.`);
           } catch (singleSubmitError) {
             console.error(`[ERROR] LanceDB: Failed to write single submission! Count: ${totalCount}`);
-            console.error("[ERROR] LanceDB: Failing submission data:", JSON.stringify(submissions, null, 2)); // Revert to simple logging
-            throw singleSubmitError; // Re-throw to be caught by outer try/catch
+            // Log cleaned data without vectors
+            console.error("[ERROR] LanceDB: Failing submission data (vectors excluded):", JSON.stringify(cleanSubmissionsForLogging(submissions), null, 2));
+            throw singleSubmitError; // Re-throw
           }
         } else {
             console.log("LanceDB:addDocumentToNamespace - No submissions to write.");
@@ -517,6 +739,16 @@ const LanceDb = {
       };
     }
 
+    // --- BEGIN ADDED SCHEMA LOGGING ---
+    try {
+        const table = await client.openTable(namespace);
+        const currentSchema = await table.schema();
+        console.log(`  [DEBUG] LanceDB:performSimilaritySearch - Schema for namespace '${namespace}' before query:`, JSON.stringify(currentSchema, null, 2));
+    } catch (schemaError) {
+        console.error(`  [ERROR] LanceDB:performSimilaritySearch - Failed to get schema for namespace '${namespace}':`, schemaError);
+    }
+    // --- END ADDED SCHEMA LOGGING ---
+
     const queryVector = await LLMConnector.embedTextInput(input);
     const result = rerank
       ? await this.rerankedSimilarityResponse({
@@ -539,19 +771,35 @@ const LanceDb = {
 
     const { contextTexts, sourceDocuments } = result;
     // Original formatting - might already exclude vectors depending on curateSources
-    const sources = sourceDocuments.map((metadata, i) => {
-      // Ensure vectors are excluded if they exist in sourceDocuments metadata
-      const { vector, ...restOfMetadata } = metadata.hasOwnProperty('metadata') ? metadata.metadata : metadata;
-      return { ...restOfMetadata, text: contextTexts[i] }; 
+    // Let's simplify the mapping to ensure we keep all metadata fields from sourceDocuments
+    const sources = sourceDocuments.map((docResult, i) => {
+      // docResult is the raw object from LanceDB search (hopefully containing all metadata)
+      const metadataToKeep = { ...docResult }; // Clone the result
+
+      // Explicitly delete vector fields if they exist (LanceDB might use 'vector' or '_vector')
+      delete metadataToKeep.vector;
+      delete metadataToKeep._vector; // Add others if needed
+      delete metadataToKeep._distance; // Also remove distance if present
+      delete metadataToKeep.rerank_score; // Remove rerank score if present
+
+      // Add the text content
+      metadataToKeep.text = contextTexts[i];
+
+      return metadataToKeep; // Return the full object + text
     });
 
     // --- BEGIN ADDED LOGGING ---
-    console.log(`  [DEBUG] LanceDB:performSimilaritySearch - Retrieved sources (metadata only):`, JSON.stringify(sources, null, 2));
+    // This log should now show the full metadata if it was retrieved by LanceDB
+    // Add replacer to handle BigInt for logging purposes
+    console.log(`  [DEBUG] LanceDB:performSimilaritySearch - Retrieved sources (metadata only):`, 
+      JSON.stringify(sources, (key, value) => typeof value === 'bigint' ? value.toString() : value, 2)
+    );
     // --- END ADDED LOGGING ---
 
     return {
       contextTexts,
-      sources: this.curateSources(sources), // Keep curateSources call if needed
+      // Pass the potentially richer `sources` to curateSources
+      sources: this.curateSources(sources), 
       message: false,
     };
   },

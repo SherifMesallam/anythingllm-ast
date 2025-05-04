@@ -97,7 +97,6 @@ class GeminiLLM {
     // Map each document/chunk object to a formatted string with metadata
     fullContextString += contextDocuments
       .map((doc, i) => {
-        // Assume 'doc' is the chunk object containing text and metadata
         const text = doc.text || doc.pageContent || ""; // Get the text content
         const metadata = doc.metadata || doc; // Metadata might be top-level or nested
 
@@ -111,11 +110,15 @@ class GeminiLLM {
           parent: metadata.parentName || null, // Use parentName from AST
           score: metadata.score?.toFixed(4) || null, // Include similarity score if available
           language: metadata.language || null, // e.g., 'php', 'js'
+          
+          // Explicitly OMIT BigInt fields from context sent to LLM
+          // wordCount: metadata.wordCount, 
+          // token_count_estimate: metadata.token_count_estimate,
 
           // New Phase 1 Fields
           featureContext: metadata.featureContext || null, // From path analysis
           summary: metadata.summary || null, // From DocBlock
-          parameters: metadata.parameters || null, // Array from DocBlock/Signature [{name, type?, description?}]
+          parameters: metadata.parameters || null, // Keep original string here for now
           returnType: metadata.returnType || null, // From DocBlock/Signature
           returnDescription: metadata.returnDescription || null, // From DocBlock @return
           visibility: metadata.modifiers?.visibility || null, // From AST Modifiers
@@ -135,7 +138,22 @@ class GeminiLLM {
           // Add other potentially useful fields from existing metadata if needed
         };
         // --- End Metadata Extraction ---
+        
+        // -- Safely parse JSON string fields from relevantMeta before use --
+        let parsedParameters = [];
+        let parsedModifiers = {};
+        let parsedImplementsInterfaces = [];
+        let parsedUsesTraits = [];
+        let parsedRegistersHooks = [];
+        let parsedTriggersHooks = [];
 
+        try { parsedParameters = relevantMeta.parameters ? JSON.parse(relevantMeta.parameters) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse parameters: ${relevantMeta.parameters}`, e); }
+        try { parsedModifiers = relevantMeta.modifiers ? JSON.parse(relevantMeta.modifiers) : {}; } catch (e) { console.error(`[Gemini Context] Failed to parse modifiers: ${relevantMeta.modifiers}`, e); }
+        try { parsedImplementsInterfaces = relevantMeta.implementsInterfaces ? JSON.parse(relevantMeta.implementsInterfaces) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse implementsInterfaces: ${relevantMeta.implementsInterfaces}`, e); }
+        try { parsedUsesTraits = relevantMeta.usesTraits ? JSON.parse(relevantMeta.usesTraits) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse usesTraits: ${relevantMeta.usesTraits}`, e); }
+        try { parsedRegistersHooks = relevantMeta.registersHooks ? JSON.parse(relevantMeta.registersHooks) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse registersHooks: ${relevantMeta.registersHooks}`, e); }
+        try { parsedTriggersHooks = relevantMeta.triggersHooks ? JSON.parse(relevantMeta.triggersHooks) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse triggersHooks: ${relevantMeta.triggersHooks}`, e); }
+        // -- End Parsing --
 
         // --- Build the formatted string for this chunk ---
         let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
@@ -157,7 +175,7 @@ class GeminiLLM {
         else {
             if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
             if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
-            if (relevantMeta.visibility) formattedChunk += `Visibility: ${relevantMeta.visibility}\n`;
+            if (parsedModifiers.visibility) formattedChunk += `Visibility: ${parsedModifiers.visibility}\n`;
             // ... (other modifier flags, deprecated, summary, parameters, return, hooks formatting remains same)
         }
         
@@ -166,10 +184,10 @@ class GeminiLLM {
         // --- Resume formatting for fields common to all or already handled ----
         // Add modifier flags if true (mostly for PHP/JS)
         const modifierFlags = [];
-        if (relevantMeta.isStatic) modifierFlags.push('static');
-        if (relevantMeta.isAbstract) modifierFlags.push('abstract');
-        if (relevantMeta.isFinal) modifierFlags.push('final');
-        if (relevantMeta.isAsync) modifierFlags.push('async'); 
+        if (parsedModifiers.isStatic) modifierFlags.push('static');
+        if (parsedModifiers.isAbstract) modifierFlags.push('abstract');
+        if (parsedModifiers.isFinal) modifierFlags.push('final');
+        if (parsedModifiers.isAsync) modifierFlags.push('async'); 
         if (modifierFlags.length > 0 && relevantMeta.language !== 'css') formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`; // Avoid showing for CSS
 
         if (relevantMeta.isDeprecated && relevantMeta.language !== 'css') formattedChunk += `Deprecated: Yes\n`; // Avoid showing for CSS
@@ -178,9 +196,9 @@ class GeminiLLM {
         if (relevantMeta.summary && relevantMeta.language !== 'css') formattedChunk += `Summary: ${relevantMeta.summary}\n`;
 
         // Format Parameters (if any - mostly PHP/JS)
-        if (relevantMeta.parameters && relevantMeta.parameters.length > 0 && relevantMeta.language !== 'css') {
+        if (parsedParameters && parsedParameters.length > 0 && relevantMeta.language !== 'css') {
            formattedChunk += `Parameters:\n`;
-           relevantMeta.parameters.forEach(p => {
+           parsedParameters.forEach(p => {
                const typeStr = p.type ? `: ${p.type}` : '';
                const descStr = p.description ? ` - ${p.description}` : '';
                formattedChunk += `  - ${p.name}${typeStr}${descStr}\n`;
@@ -194,21 +212,31 @@ class GeminiLLM {
         } 
 
          // Format Registered Hooks (PHP Only)
-        if (relevantMeta.registersHooks && relevantMeta.registersHooks.length > 0 && relevantMeta.language === 'php') {
+        if (parsedRegistersHooks && parsedRegistersHooks.length > 0 && relevantMeta.language === 'php') {
            formattedChunk += `Registers Hooks:\n`;
-           relevantMeta.registersHooks.forEach(h => {
+           parsedRegistersHooks.forEach(h => {
                formattedChunk += `  - [${h.type}] ${h.hookName} -> ${h.callback} (P:${h.priority}, A:${h.acceptedArgs})\n`;
            });
         } 
 
         // Format Triggered Hooks (PHP Only)
-        if (relevantMeta.triggersHooks && relevantMeta.triggersHooks.length > 0 && relevantMeta.language === 'php') {
+        if (parsedTriggersHooks && parsedTriggersHooks.length > 0 && relevantMeta.language === 'php') {
             formattedChunk += `Triggers Hooks:\n`;
-            relevantMeta.triggersHooks.forEach(h => {
+            parsedTriggersHooks.forEach(h => {
                 formattedChunk += `  - [${h.type}] ${h.hookName}\n`;
             });
         } 
 
+        // Add Extends/Implements/Uses (PHP specific)
+        if (relevantMeta.extendsClass && relevantMeta.language === 'php') {
+            formattedChunk += `Extends: ${relevantMeta.extendsClass}\n`;
+        }
+        if (parsedImplementsInterfaces && parsedImplementsInterfaces.length > 0 && relevantMeta.language === 'php') {
+            formattedChunk += `Implements: ${parsedImplementsInterfaces.join(', ')}\n`;
+        }
+        if (parsedUsesTraits && parsedUsesTraits.length > 0 && relevantMeta.language === 'php') {
+            formattedChunk += `Uses Traits: ${parsedUsesTraits.join(', ')}\n`;
+        }
 
         if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
         formattedChunk += `--- Code/Text ---\n${text}\n`; 
@@ -577,14 +605,21 @@ class GeminiLLM {
     // --- END MORE DETAILED LOGGING ---
 
     // Log the messages PAYLOAD received (already potentially compressed)
-    console.log("\\x1b[34m[LLM_REQUEST_PAYLOAD] [0m [Gemini - streamGetChatCompletion]");
+    console.log("\x1b[34m[LLM_REQUEST_PAYLOAD] [0m [Gemini - streamGetChatCompletion]");
     // Log the 'messages' array directly as it's the final payload for the API
     // Also log contextDocuments for reference, though it's not directly sent in this structure anymore
-    console.log(JSON.stringify({ 
-      model: this.model, 
-      messages: messages, // Log the final messages array that will be sent
-      _contextDocumentsInput: contextDocuments.map(({ vector, ...rest }) => rest) // Log original context for debug visibility
-    }, null, 2)); 
+    try {
+      console.log(JSON.stringify({ 
+        model: this.model, 
+        messages: messages, // Log the final messages array that will be sent
+        _contextDocumentsInput: contextDocuments.map(({ vector, ...rest }) => rest) // Log original context for debug visibility
+      }, 
+        (key, value) => typeof value === 'bigint' ? value.toString() : value, // <-- ADD REPLACER HERE
+        2
+      )); 
+    } catch (e) {
+      console.error("  [DEBUG] GeminiLLM: Error stringifying payload for logging:", e);
+    }
 
     // --- BEGIN MORE DETAILED LOGGING ---
     console.log("  [DEBUG] GeminiLLM: Finished logging LLM Request Payload.");

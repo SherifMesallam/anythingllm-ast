@@ -214,7 +214,8 @@ function convertToPromptHistory(history = []) {
 }
 
 function writeResponseChunk(response, data) {
-  response.write(`data: ${JSON.stringify(data)}\n\n`);
+  // Add replacer to handle BigInt values within the data object, specifically in the sources array's metadata.
+  response.write(`data: ${JSON.stringify(data, (key, value) => typeof value === 'bigint' ? value.toString() : value)}\n\n`);
   return;
 }
 

@@ -269,26 +269,29 @@ async function streamChatWithWorkspace(
   console.log(`\x1b[36m[DEBUG] stream.js: Preparing to call AiProvider.streamGetChatCompletion for workspace ${workspace.slug} [0m`);
   console.log(`  [DEBUG] stream.js: Final message count: ${messages?.length || 0}`); // Use optional chaining just in case
   console.log(`  [DEBUG] stream.js: contextDocuments count: ${contextDocuments?.length || 0}`);
-  if (contextDocuments?.length > 0) {
-      // Log contextDocuments content (excluding vectors) to see what's being passed
-      console.log('  [DEBUG] stream.js: contextDocuments content (vectors excluded):');
-      try {
-          console.log(JSON.stringify(contextDocuments.map(({ vector, ...rest }) => rest), null, 2));
-      } catch (e) {
-          console.error('  [DEBUG] stream.js: Error stringifying contextDocuments for logging:', e);
-      }
+  console.log("  [DEBUG] stream.js: contextDocuments content (vectors excluded):");
+  try {
+    // Add BigInt replacer to handle potential BigInts in metadata
+    console.log(JSON.stringify(contextDocuments.map(({ vector, ...rest }) => rest), 
+      (key, value) => typeof value === 'bigint' ? value.toString() : value, 
+      2
+    ));
+  } catch (e) {
+    console.error("  [DEBUG] stream.js: Error stringifying contextDocuments for logging:", e);
   }
   // --- END LOGGING BEFORE LLM CALL ---
 
   // --- BEGIN LOGGING IF/ELSE STREAMING CHECK ---
   console.log(`  [DEBUG] stream.js: Checking if streaming is enabled for ${LLMConnector.constructor.name}...`);
-  const isStreamingEnabled = LLMConnector.streamingEnabled();
-  console.log(`  [DEBUG] stream.js: LLMConnector.streamingEnabled() returned: ${isStreamingEnabled}`);
+  const streamingEnabled = LLMConnector.streamingEnabled();
+  console.log(`  [DEBUG] stream.js: LLMConnector.streamingEnabled() returned: ${streamingEnabled}`);
+  const disableStream = process.env.DISABLE_STREAMING === 'true';
+  console.log(`  [DEBUG] stream.js: Global streaming disabled? ${disableStream}`);
   // --- END LOGGING IF/ELSE STREAMING CHECK ---
 
   // If streaming is not explicitly enabled for connector
   // we do regular waiting of a response and send a single chunk.
-  if (isStreamingEnabled !== true) { // Use the stored result for the check
+  if (streamingEnabled !== true) { // Use the stored result for the check
     // --- BEGIN LOGGING NON-STREAMING PATH ---
     console.log(
       `\x1b[31m[STREAMING DISABLED][0m Condition met. Entering non-streaming path for ${LLMConnector.constructor.name}.`
