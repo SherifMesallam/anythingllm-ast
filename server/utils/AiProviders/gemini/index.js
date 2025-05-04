@@ -157,7 +157,6 @@ class GeminiLLM {
 
         // --- Build the formatted string for this chunk ---
         let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
-        formattedChunk += `Source File: ${relevantMeta.file}\n`;
         if (relevantMeta.language) formattedChunk += `Language: ${relevantMeta.language}\n`;
         if (relevantMeta.featureContext) formattedChunk += `Feature Context: ${relevantMeta.featureContext}\n`;
         if (relevantMeta.type) formattedChunk += `Element Type: ${relevantMeta.type}\n`;
