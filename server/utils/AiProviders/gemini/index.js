@@ -123,6 +123,7 @@ class GeminiLLM {
           isStatic: metadata.modifiers?.isStatic || false, // From AST Modifiers
           isAbstract: metadata.modifiers?.isAbstract || false, // From AST Modifiers
           isFinal: metadata.modifiers?.isFinal || false, // From AST Modifiers
+          isAsync: metadata.modifiers?.isAsync || false, // <-- Add isAsync extraction (primarily for JS)
           registersHooks: metadata.registersHooks || null, // Array from WP Hook analysis [{hookName, callback, type, priority, acceptedArgs}]
           triggersHooks: metadata.triggersHooks || null, // Array from WP Hook analysis [{hookName, type}]
 
@@ -147,6 +148,7 @@ class GeminiLLM {
         if (relevantMeta.isStatic) modifierFlags.push('static');
         if (relevantMeta.isAbstract) modifierFlags.push('abstract');
         if (relevantMeta.isFinal) modifierFlags.push('final');
+        if (relevantMeta.isAsync) modifierFlags.push('async'); // <-- Add async to the list
         if (modifierFlags.length > 0) formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`; // New
 
         if (relevantMeta.isDeprecated) formattedChunk += `Deprecated: Yes\n`; // New

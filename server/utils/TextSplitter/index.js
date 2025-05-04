@@ -209,7 +209,8 @@ class TextSplitter {
     this.log(`[AST] #splitTextWithAST: Starting AST splitting for ${language}.`);
     // Final array will hold ChunkWithMetadata objects
     let finalChunks /*: ChunkWithMetadata[]*/ = [];
-    const chunkSize = TextSplitter.determineMaxChunkSize(this.config?.chunkSize, 1000);
+    // Use the chunkSize determined during construction, don't recalculate with hardcoded limit
+    const chunkSize = this.config?.chunkSize || 1000; // Use stored config, fallback just in case
 
     try {
       // Intermediate array holds { text: string, metadata: ChunkMetadata } before size check
