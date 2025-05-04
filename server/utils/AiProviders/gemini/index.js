@@ -218,9 +218,10 @@ class GeminiLLM {
       })
       .join("");
 
-    // --- BEGIN ADDED LOGGING ---
-    console.log("\x1b[36m[DEBUG] GeminiLLM:#appendContext: Generated formatted context string (first 500 chars):\x1b[0m", fullContextString.substring(0, 500));
-    // --- END ADDED LOGGING ---
+    // --- BEGIN MODIFIED LOGGING ---
+    // Log the FULL context string (use with caution for very large contexts)
+    console.log("\x1b[36m[DEBUG] GeminiLLM:#appendContext: Generated formatted context string:\x1b[0m\n", fullContextString);
+    // --- END MODIFIED LOGGING ---
     return fullContextString;
   }
 
@@ -476,7 +477,10 @@ class GeminiLLM {
     // --- Log input parts for debugging ---
     console.log(`  [DEBUG] constructPrompt: Received System Prompt: ${!!systemPrompt}`);
     console.log(`  [DEBUG] constructPrompt: Received Context Docs Count: ${contextDocuments?.length || 0}`);
-    console.log(`  [DEBUG] constructPrompt: Received Formatted Context String (first 500 chars): ${formattedContext.substring(0, 500)}`);
+    // --- BEGIN MODIFIED LOGGING ---
+    // Log the FULL context string (use with caution for very large contexts)
+    console.log(`  [DEBUG] constructPrompt: Received Formatted Context String:\n ${formattedContext}`);
+    // --- END MODIFIED LOGGING ---
     console.log(`  [DEBUG] constructPrompt: Received Chat History Count: ${chatHistory?.length || 0}`);
     console.log(`  [DEBUG] constructPrompt: Received User Prompt: ${!!userPrompt}`);
     // --- End Log ---

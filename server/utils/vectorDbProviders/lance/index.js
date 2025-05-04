@@ -404,6 +404,10 @@ const LanceDb = {
              }
           }
 
+          // --- BEGIN ADDED LOGGING ---
+          console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Metadata for chunk ${i + 1}/${vectorValues.length} (Vector ID: ${vectorRecord.id}):`, JSON.stringify(combinedMetadata, null, 2));
+          // --- END ADDED LOGGING ---
+
           // ---
           // Skip chunks with empty text, as LanceDB errors on this.
           if (!combinedMetadata.text || combinedMetadata.text.trim().length === 0) {
@@ -534,12 +538,20 @@ const LanceDb = {
         });
 
     const { contextTexts, sourceDocuments } = result;
+    // Original formatting - might already exclude vectors depending on curateSources
     const sources = sourceDocuments.map((metadata, i) => {
-      return { metadata: { ...metadata, text: contextTexts[i] } };
+      // Ensure vectors are excluded if they exist in sourceDocuments metadata
+      const { vector, ...restOfMetadata } = metadata.hasOwnProperty('metadata') ? metadata.metadata : metadata;
+      return { ...restOfMetadata, text: contextTexts[i] }; 
     });
+
+    // --- BEGIN ADDED LOGGING ---
+    console.log(`  [DEBUG] LanceDB:performSimilaritySearch - Retrieved sources (metadata only):`, JSON.stringify(sources, null, 2));
+    // --- END ADDED LOGGING ---
+
     return {
       contextTexts,
-      sources: this.curateSources(sources),
+      sources: this.curateSources(sources), // Keep curateSources call if needed
       message: false,
     };
   },
