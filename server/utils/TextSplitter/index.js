@@ -15,6 +15,8 @@
 
 const path = require('path');
 const { RecursiveCharacterTextSplitter } = require("@langchain/textsplitters");
+const doctrine = require('doctrine'); // For parsing JSDoc comments
+const postcss = require('postcss'); // <-- Import postcss
 
 function isNullOrNaN(value) {
   if (value === null) return true;
@@ -180,6 +182,9 @@ class TextSplitter {
       } else if (fileExtension === '.php') {
         this.log("#setChunkingStrategy: Using AST strategy for PHP.");
         return 'ast-php';
+      } else if (fileExtension === '.css') {
+        this.log("#setChunkingStrategy: Using AST strategy for CSS.");
+        return 'ast-css';
       } else {
         this.log(`#setChunkingStrategy: No specific AST strategy for extension ${fileExtension}, using recursive.`);
         return 'recursive';
@@ -331,6 +336,66 @@ class TextSplitter {
           // Process other top-level nodes (functions, namespaces, statements)
           this.#addPhpNodeToChunks(node, documentText, astNodesToChunk, null);
         });
+      } else if (language === 'css') { // <-- Add CSS block
+        this.log("[AST] #splitTextWithAST: Attempting to parse CSS with PostCSS...");
+        const ast = postcss.parse(documentText, { from: this.config.filename || 'unknown.css' });
+        this.log(`[AST] #splitTextWithAST: Successfully parsed CSS AST. Found ${ast.nodes?.length || 0} top-level nodes.`);
+
+        ast.walk(node => {
+          // Process Rules (e.g., .class { ... })
+          if (node.type === 'rule') {
+            this.log(`[AST] #splitTextWithAST: Processing CSS Rule: ${node.selector}`);
+            if (node.source?.start && node.source?.end) {
+              const startLine = node.source.start.line;
+              const endLine = node.source.end.line;
+              // Extract text directly from node.toString() for accuracy including selector and braces
+              const text = node.toString(); 
+              const metadata = {
+                sourceType: 'ast',
+                language: 'css',
+                filePath: this.config.filename || null,
+                nodeType: 'rule',
+                selector: node.selector,
+                startLine: startLine,
+                endLine: endLine,
+                // featureContext added later
+              };
+              if (text.trim()) {
+                astNodesToChunk.push({ text, metadata });
+              }
+            } else {
+                 this.log(`[AST] Helper: Skipping CSS Rule (Selector: ${node.selector}) - No source location info.`);
+            }
+          }
+          // Process At-Rules (e.g., @media { ... })
+          else if (node.type === 'atrule') {
+            this.log(`[AST] #splitTextWithAST: Processing CSS AtRule: @${node.name} ${node.params}`);
+             if (node.source?.start && node.source?.end) {
+              const startLine = node.source.start.line;
+              const endLine = node.source.end.line;
+              // Extract text directly from node.toString() for accuracy
+              const text = node.toString(); 
+              const metadata = {
+                sourceType: 'ast',
+                language: 'css',
+                filePath: this.config.filename || null,
+                nodeType: 'atRule',
+                atRuleName: node.name,
+                atRuleParams: node.params,
+                startLine: startLine,
+                endLine: endLine,
+                // featureContext added later
+              };
+              if (text.trim()) {
+                astNodesToChunk.push({ text, metadata });
+              }
+            } else {
+                 this.log(`[AST] Helper: Skipping CSS AtRule (@${node.name}) - No source location info.`);
+            }
+          }
+          // We are not iterating Declarations (prop: value) individually for now
+          // Add other node types like comments if needed later
+        });
       }
 
       this.log(`[AST] #splitTextWithAST: Identified ${astNodesToChunk.length} potential chunks from AST traversal for ${language}.`);
@@ -349,7 +414,6 @@ class TextSplitter {
             if (subChunkText.trim()) { // Ensure sub-chunk is not just whitespace
               finalChunks.push({
                 text: subChunkText,
-                // Inherit original AST node metadata but mark as fallback sub-chunk
                 metadata: {
                   ...chunkInfo.metadata,
                   featureContext: this.#featureContext,
@@ -537,44 +601,58 @@ class TextSplitter {
 
     // Normalize path separators for consistency
     const normalizedPath = filename.replace(/\\/g, '/');
-    const includesSegment = '/includes/';
-    const includesIndex = normalizedPath.indexOf(includesSegment);
+    // Remove potential leading slashes for consistent splitting
+    const cleanedPath = normalizedPath.startsWith('/') ? normalizedPath.substring(1) : normalizedPath;
+    const parts = cleanedPath.split('/');
 
-    if (includesIndex === -1) {
-      this.log(`#determineFeatureContext: Path "${normalizedPath}" does not contain "${includesSegment}". No feature context.`);
-      return null; // Not within the '/includes/' structure
+    this.log(`#determineFeatureContext: Analyzing path parts: [${parts.join(', ')}]`);
+
+    // Pattern 1: Check for /includes/<feature_name>/...
+    const includesIndex = parts.indexOf('includes');
+    if (includesIndex !== -1) {
+      if (includesIndex + 1 < parts.length) {
+        // Check if the next part is not the filename itself (meaning it's a directory)
+        if (includesIndex + 2 < parts.length) {
+          const featureName = parts[includesIndex + 1];
+          this.log(`#determineFeatureContext: Found 'includes' pattern. Feature context: "${featureName}"`);
+          return featureName;
+        } else {
+          // File is directly inside /includes/ (e.g., includes/init.php)
+          this.log(`#determineFeatureContext: File directly within 'includes'. Assigning 'core'.`);
+          return 'core';
+        }
+      } else {
+        // Edge case: path ends with /includes/
+        this.log(`#determineFeatureContext: Path ends with 'includes'. Assigning 'core'.`);
+        return 'core';
+      }
     }
 
-    // Get the part of the path *after* '/includes/'
-    const pathAfterIncludes = normalizedPath.substring(includesIndex + includesSegment.length);
-
-    // Split the remaining path into parts
-    const parts = pathAfterIncludes.split('/');
-
-    if (parts.length === 0 || parts[0] === '') {
-      // This case should ideally not happen if the path contains /includes/
-      // but handle defensively. Could imply file directly in includes?
-      this.log(`#determineFeatureContext: Path structure issue after "${includesSegment}" in "${normalizedPath}". Assigning 'core'.`);
-      return 'core';
+    // Pattern 2: Check for /assets/src/<feature_name>/...
+    const assetsIndex = parts.indexOf('assets');
+    if (assetsIndex !== -1 && assetsIndex + 1 < parts.length && parts[assetsIndex + 1] === 'src') {
+      // Check if there is a segment *after* 'src'
+      if (assetsIndex + 2 < parts.length) {
+         // Check if the next part is not the filename itself (meaning it's a directory)
+         if (assetsIndex + 3 < parts.length) {
+            const featureName = parts[assetsIndex + 2];
+            this.log(`#determineFeatureContext: Found 'assets/src' pattern. Feature context: "${featureName}"`);
+            return featureName;
+         } else {
+             // File is directly inside /assets/src/ (e.g., assets/src/main.js)
+             this.log(`#determineFeatureContext: File directly within 'assets/src'. Assigning 'core'.`);
+             return 'core'; // Assign 'core' for files directly in assets/src
+         }
+      } else {
+          // Edge case: path ends with /assets/src/
+          this.log(`#determineFeatureContext: Path ends with 'assets/src'. Assigning 'core'.`);
+          return 'core';
+      }
     }
 
-    // Check if the first part is empty or just the filename itself
-    // This happens if the file is directly inside /includes/ (e.g., /includes/init.php)
-    if (parts.length === 1 && parts[0] !== '') {
-         this.log(`#determineFeatureContext: File directly within "${includesSegment}" in "${normalizedPath}". Assigning 'core'.`);
-         return 'core';
-    }
-    
-    // If parts[0] is not empty, it's our feature name
-    if (parts[0] !== '') {
-      const featureName = parts[0];
-      this.log(`#determineFeatureContext: Extracted feature context "${featureName}" from "${normalizedPath}".`);
-      return featureName;
-    }
-    
-    // Fallback / Edge case - If the first part was empty for some reason
-    this.log(`#determineFeatureContext: Fallback case for "${normalizedPath}". Assigning 'core'.`);
-    return 'core';
+    // If neither pattern matched
+    this.log(`#determineFeatureContext: No feature pattern matched for path "${normalizedPath}". No feature context.`);
+    return null;
   }
 
   // Main method to split text - now returns Promise<ChunkWithMetadata[]>
@@ -587,6 +665,8 @@ class TextSplitter {
       chunksWithMetadata = await this.#splitTextWithAST(documentText, 'js');
     } else if (this.#chunkingStrategy === 'ast-php') {
       chunksWithMetadata = await this.#splitTextWithAST(documentText, 'php');
+    } else if (this.#chunkingStrategy === 'ast-css') {
+      chunksWithMetadata = await this.#splitTextWithAST(documentText, 'css');
     } else { // Default to recursive
       const splitter = this.#getRecursiveSplitter();
       this.log("splitText: Using recursive splitter.");

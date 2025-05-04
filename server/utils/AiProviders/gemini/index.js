@@ -127,6 +127,11 @@ class GeminiLLM {
           registersHooks: metadata.registersHooks || null, // Array from WP Hook analysis [{hookName, callback, type, priority, acceptedArgs}]
           triggersHooks: metadata.triggersHooks || null, // Array from WP Hook analysis [{hookName, type}]
 
+          // New CSS Fields
+          selector: metadata.selector || null,       // From CSS AST
+          atRuleName: metadata.atRuleName || null,   // From CSS AST
+          atRuleParams: metadata.atRuleParams || null, // From CSS AST
+
           // Add other potentially useful fields from existing metadata if needed
         };
         // --- End Metadata Extraction ---
@@ -136,67 +141,86 @@ class GeminiLLM {
         let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
         formattedChunk += `Source File: ${relevantMeta.file}\n`;
         if (relevantMeta.language) formattedChunk += `Language: ${relevantMeta.language}\n`;
-        if (relevantMeta.featureContext) formattedChunk += `Feature Context: ${relevantMeta.featureContext}\n`; // New
-        if (relevantMeta.type) formattedChunk += `Element Type: ${relevantMeta.type}\n`; // Use nodeType primarily
-        if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`; // Use nodeName primarily
-        if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
-        if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
-        if (relevantMeta.visibility) formattedChunk += `Visibility: ${relevantMeta.visibility}\n`; // New
+        if (relevantMeta.featureContext) formattedChunk += `Feature Context: ${relevantMeta.featureContext}\n`;
+        if (relevantMeta.type) formattedChunk += `Element Type: ${relevantMeta.type}\n`;
+
+        // Specific CSS Formatting
+        if (relevantMeta.language === 'css') {
+            if (relevantMeta.type === 'rule' && relevantMeta.selector) {
+                 formattedChunk += `CSS Selector: ${relevantMeta.selector}\n`;
+            } else if (relevantMeta.type === 'atRule' && relevantMeta.atRuleName) {
+                 const paramsStr = relevantMeta.atRuleParams ? ` ${relevantMeta.atRuleParams}` : '';
+                 formattedChunk += `CSS At-Rule: @${relevantMeta.atRuleName}${paramsStr}\n`;
+            }
+        } 
+        // Generic/Other Language Formatting
+        else {
+            if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
+            if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
+            if (relevantMeta.visibility) formattedChunk += `Visibility: ${relevantMeta.visibility}\n`;
+            // ... (other modifier flags, deprecated, summary, parameters, return, hooks formatting remains same)
+        }
         
-        // Add modifier flags if true
+        if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
+
+        // --- Resume formatting for fields common to all or already handled ----
+        // Add modifier flags if true (mostly for PHP/JS)
         const modifierFlags = [];
         if (relevantMeta.isStatic) modifierFlags.push('static');
         if (relevantMeta.isAbstract) modifierFlags.push('abstract');
         if (relevantMeta.isFinal) modifierFlags.push('final');
-        if (relevantMeta.isAsync) modifierFlags.push('async'); // <-- Add async to the list
-        if (modifierFlags.length > 0) formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`; // New
+        if (relevantMeta.isAsync) modifierFlags.push('async'); 
+        if (modifierFlags.length > 0 && relevantMeta.language !== 'css') formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`; // Avoid showing for CSS
 
-        if (relevantMeta.isDeprecated) formattedChunk += `Deprecated: Yes\n`; // New
+        if (relevantMeta.isDeprecated && relevantMeta.language !== 'css') formattedChunk += `Deprecated: Yes\n`; // Avoid showing for CSS
 
-        // Add Summary if available
-        if (relevantMeta.summary) formattedChunk += `Summary: ${relevantMeta.summary}\n`; // New
+        // Add Summary if available (mostly PHP/JS)
+        if (relevantMeta.summary && relevantMeta.language !== 'css') formattedChunk += `Summary: ${relevantMeta.summary}\n`;
 
-        // Format Parameters (if any)
-        if (relevantMeta.parameters && relevantMeta.parameters.length > 0) {
+        // Format Parameters (if any - mostly PHP/JS)
+        if (relevantMeta.parameters && relevantMeta.parameters.length > 0 && relevantMeta.language !== 'css') {
            formattedChunk += `Parameters:\n`;
            relevantMeta.parameters.forEach(p => {
                const typeStr = p.type ? `: ${p.type}` : '';
                const descStr = p.description ? ` - ${p.description}` : '';
                formattedChunk += `  - ${p.name}${typeStr}${descStr}\n`;
            });
-        } // New
+        } 
 
-        // Format Return Info
-        if (relevantMeta.returnType) {
+        // Format Return Info (mostly PHP/JS)
+        if (relevantMeta.returnType && relevantMeta.language !== 'css') {
             const descStr = relevantMeta.returnDescription ? ` - ${relevantMeta.returnDescription}` : '';
             formattedChunk += `Returns: ${relevantMeta.returnType}${descStr}\n`;
-        } // New
+        } 
 
-         // Format Registered Hooks (if any) - Basic formatting
-        if (relevantMeta.registersHooks && relevantMeta.registersHooks.length > 0) {
-            formattedChunk += `Registers Hooks:\n`;
-            relevantMeta.registersHooks.forEach(h => {
-                formattedChunk += `  - [${h.type}] ${h.hookName} -> ${h.callback} (P:${h.priority}, A:${h.acceptedArgs})\n`;
-            });
-        } // New
+         // Format Registered Hooks (PHP Only)
+        if (relevantMeta.registersHooks && relevantMeta.registersHooks.length > 0 && relevantMeta.language === 'php') {
+           formattedChunk += `Registers Hooks:\n`;
+           relevantMeta.registersHooks.forEach(h => {
+               formattedChunk += `  - [${h.type}] ${h.hookName} -> ${h.callback} (P:${h.priority}, A:${h.acceptedArgs})\n`;
+           });
+        } 
 
-        // Format Triggered Hooks (if any) - Basic formatting
-        if (relevantMeta.triggersHooks && relevantMeta.triggersHooks.length > 0) {
+        // Format Triggered Hooks (PHP Only)
+        if (relevantMeta.triggersHooks && relevantMeta.triggersHooks.length > 0 && relevantMeta.language === 'php') {
             formattedChunk += `Triggers Hooks:\n`;
             relevantMeta.triggersHooks.forEach(h => {
                 formattedChunk += `  - [${h.type}] ${h.hookName}\n`;
             });
-        } // New
+        } 
 
 
         if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
-        formattedChunk += `--- Code/Text ---\n${text}\n`; // Keep the actual code/text
-        formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`; // Add separator
+        formattedChunk += `--- Code/Text ---\n${text}\n`; 
+        formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`; 
 
         return formattedChunk;
       })
       .join("");
 
+    // --- BEGIN ADDED LOGGING ---
+    console.log("\x1b[36m[DEBUG] GeminiLLM:#appendContext: Generated formatted context string (first 500 chars):\x1b[0m", fullContextString.substring(0, 500));
+    // --- END ADDED LOGGING ---
     return fullContextString;
   }
 
@@ -452,6 +476,7 @@ class GeminiLLM {
     // --- Log input parts for debugging ---
     console.log(`  [DEBUG] constructPrompt: Received System Prompt: ${!!systemPrompt}`);
     console.log(`  [DEBUG] constructPrompt: Received Context Docs Count: ${contextDocuments?.length || 0}`);
+    console.log(`  [DEBUG] constructPrompt: Received Formatted Context String (first 500 chars): ${formattedContext.substring(0, 500)}`);
     console.log(`  [DEBUG] constructPrompt: Received Chat History Count: ${chatHistory?.length || 0}`);
     console.log(`  [DEBUG] constructPrompt: Received User Prompt: ${!!userPrompt}`);
     // --- End Log ---
