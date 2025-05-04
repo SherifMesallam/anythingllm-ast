@@ -17,6 +17,8 @@ const path = require('path');
 const { RecursiveCharacterTextSplitter } = require("@langchain/textsplitters");
 const doctrine = require('doctrine'); // For parsing JSDoc comments
 const postcss = require('postcss'); // <-- Import postcss
+const babelParser = require('@babel/parser');
+const traverse = require('@babel/traverse').default;
 
 function isNullOrNaN(value) {
   if (value === null) return true;
@@ -292,85 +294,167 @@ class TextSplitter {
       let astNodesToChunk /*: ChunkWithMetadata[] */ = [];
 
       if (language === 'js') {
-        this.log("[AST] #splitTextWithAST: Attempting to parse JavaScript...");
-        const acorn = await import('acorn');
-        const walk = await import('acorn-walk');
+        this.log("[AST Babel] #splitTextWithAST: Attempting to parse JavaScript/JSX with Babel...");
+        // Remove dynamic imports, use require at top of file
+        // const babelParser = await import('@babel/parser');
+        // const traverse = (await import('@babel/traverse')).default; 
 
-        // Use acorn-walk for easier traversal, especially for finding methods within classes
-        const ast = acorn.parse(documentText, {
+        // Array to hold potential chunks
+        let allPotentialChunks = [];
+        let lastProcessedEndOffset = 0;
+
+        try {
+            // Use the required babelParser
+            const ast = babelParser.parse(documentText, {
           sourceType: "module",
-          ecmaVersion: "latest",
-          locations: true,
-          ranges: true // Required by some walkers or for easier text extraction
+              tokens: false, // Don't need tokens for this
+              plugins: [
+                "jsx", // Enable JSX
+                // Add other plugins if needed (e.g., 'typescript', 'decorators-legacy', 'classProperties')
+              ],
+              // Attach comments to AST nodes
+              attachComment: true,
+              errorRecovery: true, // Attempt to parse even with minor errors
         });
 
-        this.log(`[AST] #splitTextWithAST: Successfully parsed JS AST. Found ${ast.body?.length || 0} top-level nodes.`);
+            this.log(`[AST Babel] Parsed successfully. Walking AST with @babel/traverse...`);
 
-        // Use acorn-walk to visit relevant nodes
-        walk.simple(ast, {
-          // Top-level functions, classes, variables
-          FunctionDeclaration: (node) => {
-            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-          },
-          ClassDeclaration: (node) => {
-            const className = node.id?.name || null;
-            // Add the class definition itself as a chunk
-            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
+            traverse(ast, {
+                 enter: (path) => { // `path` provides context (node, parent, scope, etc.)
+                    const node = path.node;
+                    const type = node.type; // Node type (e.g., 'FunctionDeclaration')
 
-            // Walk the class body for methods
-            if (node.body && node.body.body) {
-              node.body.body.forEach(classElement => {
-                if (classElement.type === 'MethodDefinition') {
-                  this.#addJsNodeToChunks(classElement, documentText, astNodesToChunk, className);
+                    // --- Log entry for *every* node ---
+                    this.log(`[AST Babel ENTER] Visiting ${type}. Start: ${node.start}, End: ${node.end}, Current Offset: ${lastProcessedEndOffset}`);
+
+                    // Skip root Program node or nodes without location info
+                    if (type === 'Program' || !node.start || !node.end) {
+                        this.log(`[AST Babel ENTER] Skipping node.`);
+                        return;
+                    }
+
+                    // Update offset based on the *start* of the current node we are processing
+                    // Only update if the node truly starts after the last one ended, 
+                    // preventing issues with nested traversals potentially moving the offset backward.
+                    if (node.start > lastProcessedEndOffset) {
+                       this.log(`[AST Babel Offset] Updating offset based on node start: ${lastProcessedEndOffset} -> ${node.start}`);
+                       lastProcessedEndOffset = node.start;
+                    }
+
+                    // --- 2. Process the Node itself --- 
+                    const nodeText = documentText.substring(node.start, node.end);
+                    let isPrimaryStructure = false;
+                    const currentScope = this.getBabelScopeString(path);
+
+                    // Log node details before processing
+                    this.log(`[AST Babel Node] Processing ${type}. Scope: ${currentScope}. Text length: ${nodeText.length}. Range ${node.start}-${node.end}`);
+
+                    // Determine if it's a primary structure
+                    if (type === 'FunctionDeclaration' || type === 'ClassDeclaration' || type === 'FunctionExpression' || type === 'ArrowFunctionExpression' || type === 'ClassMethod' || type === 'ObjectMethod') {
+                         // Refined logic: Check if parent is Program or if it's a method
+                         // Or if it's a function/arrow assigned potentially at top level (parent is VariableDeclarator whose parent is Program)
+                         if (path.parentPath?.isProgram() || 
+                             type === 'ClassMethod' || 
+                             type === 'ObjectMethod' ||
+                             ((type === 'FunctionExpression' || type === 'ArrowFunctionExpression') && path.parentPath?.isVariableDeclarator() && path.parentPath.parentPath?.isProgram()))
+                         {
+                             isPrimaryStructure = true;
+                         }
+                    }
+
+                    // --- ONLY create chunks for PRIMARY structures --- 
+                    if (isPrimaryStructure) {
+                        const nodeName = this.getBabelNodeName(node);
+                        this.log(`[AST Babel Walk] Identified as PRIMARY Node: ${type} (Name: ${nodeName || 'N/A'}) - Creating Chunk.`);
+                        let jsdocMeta = this.parseBabelJsDoc(node, documentText);
+                        const chunkMetadata = {
+                            sourceType: 'ast',
+                            language: 'js',
+                            filePath: this.config.filename || "",
+                            nodeType: type,
+                            nodeName: nodeName || "",
+                            scope: currentScope,
+                            startLine: node.loc ? node.loc.start.line : this.getLineNumber(documentText, node.start),
+                            endLine: node.loc ? node.loc.end.line : this.getLineNumber(documentText, node.end),
+                            docComment: jsdocMeta.docComment,
+                            summary: jsdocMeta.summary,
+                            parameters: jsdocMeta.parameters,
+                            returnType: jsdocMeta.returnInfo.type,
+                            returnDescription: jsdocMeta.returnInfo.description,
+                            isDeprecated: jsdocMeta.isDeprecated,
+                            modifiers: {}, // Modifiers might need specific babel logic if required
+                            extendsClass: this.getBabelExtends(node, documentText),
+                            featureContext: this.#featureContext || ""
+                        };
+
+                        if (nodeText.trim()) {
+                           allPotentialChunks.push({ text: nodeText, metadata: chunkMetadata });
+                           this.log(`[AST Babel Chunk] Added chunk for PRIMARY ${type}. Total potential chunks: ${allPotentialChunks.length}`);
+                        } else {
+                           this.log(`[AST Babel Walk] Skipping PRIMARY Node ${type} - Extracted text is empty.`);
+                        }
+                    } else {
+                        // --- [REMOVED] No chunk creation for non-primary nodes --- 
+                        this.log(`[AST Babel Walk] Identified as OTHER Node: ${type}. Skipping chunk creation.`);
+                    }
+
+                    // --- 3. Update last processed offset based on the *end* of the current node --- 
+                    // Only update if the node truly ends after the current offset
+                    if (node.end > lastProcessedEndOffset) {
+                       this.log(`[AST Babel Offset] Updating offset after node processing: ${lastProcessedEndOffset} -> ${node.end}`);
+                       lastProcessedEndOffset = node.end;
+                    } else {
+                       // This warning might still appear if traversal order is unexpected, but less critical now
+                       this.log(`[AST Babel Offset] [WARN] Node end (${node.end}) did not advance offset (${lastProcessedEndOffset}).`);
+                    }
                 }
-              });
+            });
+
+            // Add logging right after traversal completes
+            this.log(`[AST Babel] After traverse, allPotentialChunks count: ${allPotentialChunks.length}`);
+            if (allPotentialChunks.length > 0) {
+              this.log(`[AST Babel] Sample potential chunk metadata:`, JSON.stringify(allPotentialChunks[0].metadata, null, 2));
             }
-          },
-          /*
-          VariableDeclaration: (node) => {
-            // Could potentially iterate node.declarations if needed
-            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-          },
-          */
-          // Handle top-level exports containing the above
-          ExportNamedDeclaration: (node) => {
-            if (node.declaration) {
-              // Need to determine type of declaration and call appropriate handler or generic one
-              if (node.declaration.type === 'FunctionDeclaration' || node.declaration.type === 'ClassDeclaration' || node.declaration.type === 'VariableDeclaration') {
-                // Recursively handle or extract logic from specific handlers
-                // For now, just add the exported declaration as a chunk
-                this.#addJsNodeToChunks(node.declaration, documentText, astNodesToChunk, null);
-                // TODO: If it's a class, need to walk its body for methods like above
-              } else {
-                // Add the export statement itself if declaration is not chunkable type
-                this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-              }
-            } else {
-              // Handle export { ... } case if necessary, chunk the whole statement
-              this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
+
+            // --> Assign the results back to the main array used later <--
+            astNodesToChunk = allPotentialChunks;
+
+            this.log("[AST Babel] Traverse finished.");
+
+            // --- Handle Trailing Code ---
+            if (lastProcessedEndOffset < documentText.length) {
+                const trailingText = documentText.substring(lastProcessedEndOffset);
+                if (trailingText.trim()) {
+                    this.log(`[AST Babel Walk] Found TRAILING text (length: ${trailingText.length}) after last node.`);
+                    astNodesToChunk.push({
+                        text: trailingText,
+                        metadata: {
+                            sourceType: 'code-segment',
+                            language: 'js',
+                            filePath: this.config.filename || "",
+                            scope: 'global',
+                            startLine: this.getLineNumber(documentText, lastProcessedEndOffset),
+                            endLine: this.getLineNumber(documentText, documentText.length),
+                            featureContext: this.#featureContext || ""
+                        }
+                    });
+                }
             }
-          },
-          ExportDefaultDeclaration: (node) => {
-            if (node.declaration) {
-              // Similar logic as ExportNamedDeclaration
-              if (node.declaration.type === 'FunctionDeclaration' || node.declaration.type === 'ClassDeclaration' || node.declaration.type === 'VariableDeclaration') {
-                this.#addJsNodeToChunks(node.declaration, documentText, astNodesToChunk, null);
-                // TODO: If it's a class, need to walk its body for methods
-              } else {
-                // Chunk the export default statement + its expression/literal
-                this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-              }
-            }
-          },
-          // Catch other top-level statements (like imports, expressions)
-          ExpressionStatement: (node) => {
-            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-          },
-          ImportDeclaration: (node) => {
-            this.#addJsNodeToChunks(node, documentText, astNodesToChunk, null);
-          }
-          // Add other node types as needed
-        });
+            this.log(`[AST Babel] Finished walk and gap analysis. ${astNodesToChunk.length} potential chunks identified.`);
+
+        } catch (e) {
+            // Log Babel parsing/traversal errors
+            this.log(`\x1b[31m[AST Babel] [ERROR]\x1b[0m Failed during Babel parsing/traversal for JS: ${e.message}. Stack: ${e.stack}. Falling back to recursive splitting.`);
+            // Fallback to recursive if Babel fails
+            const recursiveSplitter = this.#getRecursiveSplitter();
+            const textChunks = await recursiveSplitter.splitText(documentText);
+            finalChunks = textChunks.map(chunk => ({
+                text: chunk,
+                metadata: { sourceType: 'recursive', startLine: 0, endLine: 0, featureContext: this.#featureContext || "", filePath: this.config.filename || "" }
+            }));
+            // Skip the size processing loop below if we fell back
+            astNodesToChunk = []; // Prevent entering the size check loop
+        }
 
       } else if (language === 'php') {
         this.log("[AST] #splitTextWithAST: Attempting to parse PHP...");
@@ -513,7 +597,7 @@ class TextSplitter {
     if (!header) {
       // Return chunks with metadata as-is if no header
       return finalChunks.filter(chunkObject => !!chunkObject.text.trim());
-    }
+      }
 
     // Prepend header to each non-empty chunk's text property if header exists
     return finalChunks
@@ -522,66 +606,6 @@ class TextSplitter {
           ...chunkObject,
           text: `${header}${chunkObject.text}` // Prepend header to text
       }));
-  }
-
-  // Helper to add JS node chunk with metadata
-  #addJsNodeToChunks(node, documentText, chunkArray, parentName) {
-    if (node?.loc && node.start !== undefined && node.end !== undefined) {
-      const start = node.start;
-      const end = node.end;
-      const text = documentText.substring(start, end);
-      const startLine = node.loc.start.line;
-      const endLine = node.loc.end.line;
-      let nodeName = null;
-      let extendsClassName = null;
-
-      // Extract name based on common patterns
-      if (node.id?.name) { // FunctionDeclaration, ClassDeclaration, VariableDeclarator (within VariableDeclaration)
-        nodeName = node.id.name;
-      } else if (node.key?.name) { // MethodDefinition
-        nodeName = node.key.name;
-      } else if (node.type === 'VariableDeclaration' && node.declarations?.length > 0) {
-        // For VariableDeclaration, try to get name from the first declarator
-        nodeName = node.declarations[0].id?.name;
-      }
-
-      // Extract extends info for classes
-      if (node.type === 'ClassDeclaration' && node.superClass) {
-        // Attempt to get name, fallback to source snippet
-        extendsClassName = node.superClass.name || documentText.substring(node.superClass.start, node.superClass.end);
-      }
-
-      const chunkMetadata = {
-        sourceType: 'ast',
-        language: 'js',
-        filePath: this.config.filename || "",
-        nodeType: node.type || "",
-        nodeName: nodeName || "",
-        parentName: parentName || "",
-        startLine: startLine,
-        endLine: endLine,
-        docComment: "",
-        summary: "",
-        parameters: [],
-        returnType: "",
-        returnDescription: "",
-        isDeprecated: false,
-        modifiers: {},
-        extendsClass: extendsClassName || "",
-      };
-
-      // --- BEGIN ADDED LOGGING ---
-      this.log(`[AST] Helper: Final Chunk Metadata (JS Node ${nodeName || node.type}):`, JSON.stringify(chunkMetadata, null, 2));
-      // --- END ADDED LOGGING ---
-
-      this.log(`[AST] Helper: Identified JS Node (Type: ${node.type}, Name: ${nodeName}, Parent: ${parentName}, Lines: ${startLine}-${endLine})`);
-      if (text.trim()) {
-        this.log(`[AST] Helper: Extracted JS text snippet (length: ${text.length}). Adding to potential chunks.`);
-        chunkArray.push({ text, metadata: chunkMetadata });
-      }
-    } else {
-      this.log(`[AST] Helper: Skipping JS Node (Type: ${node?.type}) - No location info.`);
-    }
   }
 
   // Helper to add PHP node chunk with metadata
@@ -658,7 +682,7 @@ class TextSplitter {
               this.log(`\x1b[33m[AST] Helper [WARN]\x1b[0m Failed to parse PHP DocBlock comment for ${nodeName || node.kind}: ${e.message}`);
           }
         }
-      }
+        }
       // --- End Re-implement DocBlock Parsing ---
 
       // --- Re-implement Signature Parameter logic ---
@@ -722,7 +746,7 @@ class TextSplitter {
                 .flatMap(stmt => stmt.traits.map(trait => trait.name || ""));
           }
            this.log(`[AST] Helper: Parsed PHP class details - Extends: ${extendsClassName || 'N/A'}, Implements: ${implementsInterfaces.join(', ') || 'N/A'}, Uses: ${usesTraits.join(', ') || 'N/A'}`);
-      }
+        }
       // --- End Re-implement Class/Trait detail logic ---
 
       // --- Re-implement Modifier logic ---
@@ -911,10 +935,123 @@ class TextSplitter {
       }));
   }
 
-  // Helper to get code snippet from start/end positions - Made public
+  // Helper to get code snippet from start/end positions
   getCodeFromRange(text, start, end) {
     if (start === undefined || end === undefined) return "";
     return text.substring(start, end);
+  }
+
+  // Add helper methods for Babel processing (can be placed before #splitTextWithAST or after other helpers)
+  getBabelScopeString(path) {
+    let scope = 'global';
+    try {
+      path.findParent((parentPath) => {
+        const parentNode = parentPath.node;
+        let parentName = 'anonymous';
+        if (parentNode.type === 'FunctionDeclaration' || parentNode.type === 'FunctionExpression' || parentNode.type === 'ArrowFunctionExpression') {
+          parentName = parentNode.id?.name || (parentNode.key?.name) || (parentNode.type === 'ArrowFunctionExpression' ? 'arrow_func' : 'anonymous_func');
+          scope = `function:${parentName} > ${scope}`;
+        } else if (parentNode.type === 'ClassDeclaration' || parentNode.type === 'ClassExpression') {
+          parentName = parentNode.id?.name || 'anonymous_class';
+          scope = `class:${parentName} > ${scope}`;
+        } else if (parentNode.type === 'ClassMethod' || parentNode.type === 'ObjectMethod') {
+          parentName = parentNode.key?.name || 'anonymous_method';
+          scope = `method:${parentName} > ${scope}`;
+        }
+        // Stop traversal if we hit the Program node (top level)
+        return parentPath.isProgram();
+      });
+    } catch(e) {
+      this.log(`[AST Babel Scope] Error determining scope: ${e.message}`);
+    }
+    return scope.replace(/ > global$/, ''); // Clean up trailing global
+  }
+
+  getBabelNodeName(node) {
+    if (node.id?.name) return node.id.name; // FunctionDeclaration, ClassDeclaration
+    if (node.key?.name) return node.key.name; // ClassMethod, ObjectMethod
+    // Could add checks for VariableDeclarator names if needed, but handled by scope
+    return null;
+  }
+
+  getBabelExtends(node, documentText) {
+    if ((node.type === 'ClassDeclaration' || node.type === 'ClassExpression') && node.superClass) {
+        // Babel often represents superclass names simply
+        if (node.superClass.type === 'Identifier') {
+            return node.superClass.name;
+        }
+        // Fallback: extract text if it's more complex
+        if (node.superClass.start && node.superClass.end) {
+             return documentText.substring(node.superClass.start, node.superClass.end);
+        }
+    }
+    return "";
+  }
+
+  parseBabelJsDoc(node, documentText) {
+    let result = {
+        docComment: "", summary: "", parameters: [], 
+        returnInfo: { type: "", description: "" }, isDeprecated: false
+    };
+    if (!node.leadingComments || node.leadingComments.length === 0 || !documentText) return result;
+
+    // Find the last block comment ending right before the node
+    let relevantComment = null;
+    let minDistance = Infinity;
+    for (const comment of node.leadingComments) {
+      if (comment.type === 'CommentBlock' && comment.end < node.start) {
+         const distance = node.start - comment.end;
+         const interveningText = documentText.substring(comment.end, node.start);
+         if (interveningText.trim() === '' && distance < minDistance) {
+            if (comment.value.startsWith('*')) { // Check if it looks like JSDoc
+               relevantComment = comment;
+               minDistance = distance;
+            }
+         }
+      }
+    }
+
+    if (!relevantComment) return result;
+
+    result.docComment = `/*${relevantComment.value}*/`;
+    try {
+        const parsedDoc = doctrine.parse(result.docComment, { 
+            unwrap: true, sloppy: true, tags: null, lineNumbers: true 
+        });
+        result.summary = parsedDoc.description || "";
+        parsedDoc.tags.forEach(tag => {
+            switch (tag.title) {
+                case 'param': case 'parameter': case 'arg': case 'argument':
+                    result.parameters.push({ name: tag.name || "", type: tag.type ? doctrine.type.stringify(tag.type) : "", description: tag.description || "" });
+                    break;
+                case 'return': case 'returns':
+                    result.returnInfo.type = tag.type ? doctrine.type.stringify(tag.type) : "";
+                    result.returnInfo.description = tag.description || "";
+                    break;
+                case 'deprecated':
+                    result.isDeprecated = true;
+                    break;
+            }
+        });
+        this.log(`[AST Babel JSDoc] Parsed successfully for node ${this.getBabelNodeName(node)}.`);
+    } catch (e) {
+        this.log(`\x1b[33m[AST Babel JSDoc] [WARN]\x1b[0m Failed to parse comment: ${e.message}`);
+    }
+    return result;
+  }
+
+  getLineNumber(text, offset) {
+    const lines = text.split('\n');
+    let lineNumber = 1;
+    let currentOffset = 0;
+    for (const line of lines) {
+      currentOffset += line.length + 1; // +1 for the newline character
+      if (currentOffset > offset) {
+        return lineNumber;
+      }
+      lineNumber++;
+    }
+    return lines.length; // 1-based line number
   }
 }
 
