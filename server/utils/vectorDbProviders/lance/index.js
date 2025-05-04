@@ -384,13 +384,13 @@ const LanceDb = {
              }
           }
 
-          // --- Log combined metadata and text chunk --- 
-          console.log(`\n--- LanceDB: Processing Chunk ${i + 1}/${vectorValues.length} ---\n` +
-                   `Chunk Text Length: ${chunksWithMetadata[i].text.length}\n` +
-                   `Combined Metadata:\n${JSON.stringify(combinedMetadata, null, 2)}\n` +
-                   `Chunk Text Preview (first 100 chars):\n${chunksWithMetadata[i].text.substring(0, 100)}...\n` +
-                   `--- End Chunk Processing ---`);
-           // -------------------------------------------
+          // ---
+          // Skip chunks with empty text, as LanceDB errors on this.
+          if (!combinedMetadata.text || combinedMetadata.text.trim().length === 0) {
+            console.log(`[WARN] LanceDB: Skipping chunk ${i + 1}/${vectorValues.length} due to empty text content.`);
+            continue; // Skip to the next vector
+          }
+          // ---
 
           vectors.push({
               ...vectorRecord,
@@ -400,103 +400,13 @@ const LanceDb = {
           // Separate text from other metadata for LanceDB submission
           const { text: chunkText, ...otherMetadata } = combinedMetadata;
 
-          // ---
-          // Skip chunks with empty text, as LanceDB errors on this.
-          if (!chunkText || chunkText.trim().length === 0) {
-            console.log(`[WARN] LanceDB: Skipping chunk ${i + 1}/${vectorValues.length} due to empty text content.`);
-            continue; // Skip to the next vector
-          }
-          // ---
-
-          // --- BEGIN ENHANCED LOGGING (Before Push) ---
-          console.log(`\x1b[33m[DEBUG] LanceDB Preparing chunk ${i + 1} metadata for push:[0m`);
-          try {
-            // Log lengths of potentially large fields
-            console.log(`  [DEBUG] Chunk Text Length: ${chunkText?.length || 0}`);
-            for (const key in otherMetadata) {
-              // Check for keys that were likely stringified from objects/arrays
-              if ((key === 'modifiers' || key === 'implementsInterfaces' || key === 'usesTraits' || key === 'extendsClass') && typeof otherMetadata[key] === 'string') {
-                console.log(`  [DEBUG] Length of stringified '${key}': ${otherMetadata[key].length}`);
-              }
-              // Log length if any other string seems excessively long (e.g., > 10k chars)
-              else if (typeof otherMetadata[key] === 'string' && otherMetadata[key].length > 10000) {
-                 console.log(`  [DEBUG] Length of long string field '${key}': ${otherMetadata[key].length}`);
-              }
-            }
-            // Optionally log the whole metadata object if lengths seem reasonable, but be cautious
-            // console.log(JSON.stringify(otherMetadata, null, 2));
-          } catch (logError) {
-            console.error("\x1b[31mError during enhanced logging before push:[0m", logError);
-          }
-          // --- END ENHANCED LOGGING (Before Push) ---
-
-          // --- BEGIN UTF-8 VALIDATION ---
-          let isValidUtf8 = true;
-          let cleanedChunkText = chunkText;
-          try {
-            // Buffer.from will throw if it encounters invalid UTF-8 sequences when encoding is specified.
-            // We compare the original length to the length after converting to buffer and back to check for subtle issues.
-            const buffer = Buffer.from(chunkText, 'utf8');
-            const roundTripText = buffer.toString('utf8');
-            if (roundTripText !== chunkText) {
-               // This might indicate issues even if Buffer.from didn't throw, like replacement chars being inserted.
-               console.warn(`\x1b[31m[WARN] LanceDB: Chunk ${i + 1} text content changed after UTF-8 round trip. Potential encoding issues. Original length: ${chunkText.length}, Round-trip length: ${roundTripText.length}. Attempting to use cleaned text. [0m`);
-               // cleanedChunkText = roundTripText; // Optionally use the 'cleaned' version
-               // OR decide to skip the chunk entirely if this is problematic
-               // isValidUtf8 = false; // Mark as invalid if needed
-            }
-            // Basic check for UTF-8 replacement character, often indicates problems
-            if (cleanedChunkText.includes('\uFFFD')) {
-              console.warn(`\x1b[31m[WARN] LanceDB: Chunk ${i + 1} text contains UTF-8 replacement character (). Potential encoding issues. [0m`);
-              // Optionally clean further or skip
-            }
-
-          } catch (utf8Error) {
-            console.error(`\x1b[31m[ERROR] LanceDB: Chunk ${i + 1} text contains invalid UTF-8 sequence! Skipping chunk. [0m`, utf8Error.message);
-            isValidUtf8 = false;
-          }
-          // --- END UTF-8 VALIDATION ---
-
-          // --- Comprehensive check/fix for ALL empty strings in metadata ---
-          for (const key in otherMetadata) {
-            if (otherMetadata.hasOwnProperty(key) && typeof otherMetadata[key] === 'string' && otherMetadata[key] === "") {
-              console.log(`[DEBUG] LanceDB: Replacing empty string in metadata key '${key}' with placeholder '-' for chunk`, i + 1);
-              otherMetadata[key] = "-";
-            }
-          }
-          // ----------------------------------------------------------------
-
-          // --- TEMPORARY DEBUGGING: Submit minimal data --- 
-          // Only push if UTF-8 is valid (or skip if needed based on policy)
-          if (isValidUtf8) {
-            const currentDocId = otherMetadata.docId || metadata.docId || null;
-            
-            // --- BEGIN MORE DETAILED PRE-SUBMISSION LOGGING ---
-            console.log(`\x1b[36m[DEBUG] Pre-Submission Check for Chunk ${i + 1}:[0m`);
-            console.log(`  [DEBUG] vectorRecord.id: ${vectorRecord.id} (Type: ${typeof vectorRecord.id})`);
-            console.log(`  [DEBUG] vectorRecord.values length: ${vectorRecord.values?.length || 'N/A'}`);
-            if (vectorRecord.values?.length > 0) {
-              console.log(`  [DEBUG] vectorRecord.values[0] type: ${typeof vectorRecord.values[0]}`);
-            }
-            
-            const submissionObject = {
-              id: vectorRecord.id,
-              vector: vectorRecord.values,
-              // text: cleanedChunkText, // <-- Still commented out
-              // Minimal metadata for identification
-              filePath: otherMetadata.filePath || null, 
-              docId: currentDocId ?? vectorRecord.id, // <-- Use chunkId as fallback if docId is null/undefined
-              chunkId: vectorRecord.id // Reference original ID if needed
-              // ...otherMetadata // <-- Still commented out
-            };
-            
-            console.log(`  [DEBUG] Submission Object Keys: ${Object.keys(submissionObject).join(', ')}`);
-            console.log(`  [DEBUG] Submission Object Value Types: ${Object.values(submissionObject).map(v => typeof v).join(', ')}`);
-            // --- END MORE DETAILED PRE-SUBMISSION LOGGING ---
-
-            submissions.push(submissionObject);
-          }
-          // --- END TEMPORARY DEBUGGING ---
+          // Original submission logic:
+          submissions.push({
+            id: vectorRecord.id,
+            vector: vectorRecord.values,
+            text: chunkText, // Use original, non-truncated text for storage
+            ...otherMetadata, // Spread the rest of the combined metadata
+          });
           
           documentVectors.push({ docId, vectorId: vectorRecord.id });
         }
@@ -513,61 +423,17 @@ const LanceDb = {
         console.log(`LanceDB:addDocumentToNamespace - Total submissions to process: ${totalCount}`);
         const { client } = await this.connect();
 
-        // --- BEGIN SCHEMA LOGGING ---
-        try {
-          const tableExists = await this.namespaceExists(client, namespace);
-          if (tableExists) {
-            const table = await client.openTable(namespace);
-            console.log(`[36m[DEBUG] Existing schema for table '${namespace}':[0m`, JSON.stringify(table.schema, null, 2));
-          } else {
-            console.log(`[36m[DEBUG] Table '${namespace}' does not exist yet. Will be created with inferred schema from first batch/submission.[0m`);
-            // Log the structure of the first item as an example of what schema might be inferred
-            if (submissions.length > 0) {
-               const { vector, ...exampleData } = submissions[0]; // Exclude vector for readability
-               console.log(`  [DEBUG] Example data structure for schema inference:`, JSON.stringify(exampleData, null, 2));
-            }
-          }
-        } catch(schemaError) {
-           console.error(`[31m[ERROR] Failed to retrieve or log schema for table '${namespace}':[0m`, schemaError);
-        }
-        // --- END SCHEMA LOGGING ---
-
         if (totalCount > BATCH_SIZE) {
           // Apply batching only if total count exceeds batch size
           console.log(`LanceDB:addDocumentToNamespace - Submitting ${totalCount} records to LanceDB in batches of ${BATCH_SIZE}...`);
           for (const submissionBatch of toChunks(submissions, BATCH_SIZE)) {
               try {
                   console.log(`LanceDB:addDocumentToNamespace - Writing batch of ${submissionBatch.length} records...`);
-                  // --- BEGIN ADDED LOGGING ---
-                  console.log("\x1b[31m[LANCEDB_BATCH_SUBMISSION_DATA] [0m Batch size:", submissionBatch.length);
-                  try {
-                    // Use try/catch for JSON stringify in case of circular references, though unlikely here
-                    // Map to exclude the 'vector' field before logging
-                    const batchWithoutVectors = submissionBatch.map(({ vector, ...rest }) => rest);
-                    console.log(JSON.stringify(batchWithoutVectors, null, 2));
-                  } catch (jsonError) {
-                    console.error("\x1b[31mError stringifying submission batch (no vectors) for logging: [0m", jsonError);
-                    console.log("Attempting to log individual items (no vectors)...");
-                    submissionBatch.forEach((item, index) => {
-                      console.log(`--- Item ${index + 1} ---`);
-                      try {
-                        const { vector, ...rest } = item;
-                        console.log(JSON.stringify(rest, null, 2));
-                      } catch (itemJsonError) {
-                        console.error("\x1b[31mError stringifying item (no vector): [0m", itemJsonError);
-                        const { vector, ...rest } = item;
-                        console.log("Item keys (excluding vector):", Object.keys(rest)); // Log keys if stringify fails
-                      }
-                    });
-                  }
-                  // --- END ADDED LOGGING ---
                   await this.updateOrCreateCollection(client, submissionBatch, namespace);
                   console.log(`LanceDB:addDocumentToNamespace - Batch written successfully.`);
               } catch (batchError) {
                   console.error(`[ERROR] LanceDB: Failed to write batch! Batch Size: ${submissionBatch.length}`);
-                  // Exclude vectors from the error log output
-                  const batchWithoutVectors = submissionBatch.map(({ vector, ...rest }) => rest);
-                  console.error("[ERROR] LanceDB: Failing batch data (vectors excluded):", JSON.stringify(batchWithoutVectors, null, 2));
+                  console.error("[ERROR] LanceDB: Failing batch data:", JSON.stringify(submissionBatch, null, 2)); // Revert to simple logging
                   throw batchError; // Re-throw to be caught by outer try/catch
               }
           }
@@ -575,35 +441,11 @@ const LanceDb = {
           // If total count is positive but not > BATCH_SIZE, submit all at once
           console.log(`LanceDB:addDocumentToNamespace - Submitting ${totalCount} records to LanceDB in a single batch...`);
           try {
-            // --- BEGIN ADDED LOGGING ---
-            console.log("\x1b[31m[LANCEDB_SINGLE_SUBMISSION_DATA] [0m Submission size:", submissions.length);
-            try {
-              // Map to exclude the 'vector' field before logging
-              const submissionsWithoutVectors = submissions.map(({ vector, ...rest }) => rest);
-              console.log(JSON.stringify(submissionsWithoutVectors, null, 2));
-            } catch (jsonError) {
-              console.error("\x1b[31mError stringifying submission (no vectors) for logging: [0m", jsonError);
-              console.log("Attempting to log individual items (no vectors)...");
-              submissions.forEach((item, index) => {
-                console.log(`--- Item ${index + 1} ---`);
-                try {
-                  const { vector, ...rest } = item;
-                  console.log(JSON.stringify(rest, null, 2));
-                } catch (itemJsonError) {
-                  console.error("\x1b[31mError stringifying item (no vector): [0m", itemJsonError);
-                  const { vector, ...rest } = item;
-                  console.log("Item keys (excluding vector):", Object.keys(rest)); // Log keys if stringify fails
-                }
-              });
-            }
-            // --- END ADDED LOGGING ---
             await this.updateOrCreateCollection(client, submissions, namespace);
             console.log(`LanceDB:addDocumentToNamespace - Single submission successful.`);
           } catch (singleSubmitError) {
             console.error(`[ERROR] LanceDB: Failed to write single submission! Count: ${totalCount}`);
-            // Exclude vectors from the error log output
-            const submissionsWithoutVectors = submissions.map(({ vector, ...rest }) => rest);
-            console.error("[ERROR] LanceDB: Failing submission data (vectors excluded):", JSON.stringify(submissionsWithoutVectors, null, 2));
+            console.error("[ERROR] LanceDB: Failing submission data:", JSON.stringify(submissions, null, 2)); // Revert to simple logging
             throw singleSubmitError; // Re-throw to be caught by outer try/catch
           }
         } else {
