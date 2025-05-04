@@ -115,19 +115,25 @@ const LanceDb = {
       .rerank(query, vectorSearchResults, { topK: topN })
       .then((rerankResults) => {
         rerankResults.forEach((item) => {
-          if (this.distanceToSimilarity(item._distance) < similarityThreshold)
-            return;
-          const { vector: _, ...rest } = item;
+          const score = item?.rerank_score || this.distanceToSimilarity(item._distance);
+          if (score < similarityThreshold) return;
+
+          const { vector: _, _distance, rerank_score, ...rest } = item;
+
           if (filterIdentifiers.includes(sourceIdentifier(rest))) {
             console.log(
               "LanceDB: A source was filtered from context as it's parent document is pinned."
             );
             return;
           }
-          const score =
-            item?.rerank_score || this.distanceToSimilarity(item._distance);
 
-          result.contextTexts.push(rest.text);
+          const textContent = rest.text || "";
+          if (!textContent) {
+             console.log(`[WARN] LanceDB: Reranked item ${rest.id} missing text content, skipping.`);
+             return;
+          }
+
+          result.contextTexts.push(textContent);
           result.sourceDocuments.push({
             ...rest,
             score,
@@ -176,9 +182,11 @@ const LanceDb = {
       .toArray();
 
     response.forEach((item) => {
-      if (this.distanceToSimilarity(item._distance) < similarityThreshold)
-        return;
-      const { vector: _, ...rest } = item;
+      const score = this.distanceToSimilarity(item._distance);
+      if (score < similarityThreshold) return;
+
+      const { vector: _, _distance, ...rest } = item;
+
       if (filterIdentifiers.includes(sourceIdentifier(rest))) {
         console.log(
           "LanceDB: A source was filtered from context as it's parent document is pinned."
@@ -186,12 +194,18 @@ const LanceDb = {
         return;
       }
 
-      result.contextTexts.push(rest.text);
+      const textContent = rest.text || "";
+      if (!textContent) {
+         console.log(`[WARN] LanceDB: Similarity item ${rest.id} missing text content, skipping.`);
+         return;
+      }
+
+      result.contextTexts.push(textContent);
       result.sourceDocuments.push({
         ...rest,
-        score: this.distanceToSimilarity(item._distance),
+        score,
       });
-      result.scores.push(this.distanceToSimilarity(item._distance));
+      result.scores.push(score);
     });
 
     return result;
@@ -318,6 +332,12 @@ const LanceDb = {
       // because we then cannot atomically control our namespace to granularly find/remove documents
       // from vectordb.
       const EmbedderEngine = getEmbeddingEngineSelection();
+
+      // --- BEGIN LOGGING EMBEDDER LIMIT ---
+      const embedderLimit = EmbedderEngine?.embeddingMaxChunkLength;
+      console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Embedder Engine: ${EmbedderEngine?.constructor?.name}`);
+      console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Embedder reported max chunk length: ${embedderLimit} (Type: ${typeof embedderLimit})`);
+      // --- END LOGGING EMBEDDER LIMIT ---
 
       const splitterOptions = {
         chunkSize: TextSplitter.determineMaxChunkSize(

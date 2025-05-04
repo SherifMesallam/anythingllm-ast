@@ -220,25 +220,80 @@ async function streamChatWithWorkspace(
     return;
   }
 
-  // Compress & Assemble message to ensure prompt passes token limit with room for response
-  // and build system messages based on inputs and history.
-  const messages = await LLMConnector.compressMessages(
-    {
-      systemPrompt: await chatPrompt(workspace, user),
-      userPrompt: updatedMessage,
-      contextDocuments,
-      chatHistory,
-      attachments,
-    },
-    rawHistory
-  );
+  // --- BEGIN LOGGING AROUND compressMessages ---
+  let messages;
+  try {
+    console.log("  [DEBUG] stream.js: About to call LLMConnector.compressMessages...");
+    messages = await LLMConnector.compressMessages(
+      {
+        systemPrompt: await chatPrompt(workspace, user),
+        userPrompt: updatedMessage,
+        contextDocuments,
+        chatHistory,
+        attachments,
+      },
+      rawHistory
+    );
+    console.log("  [DEBUG] stream.js: LLMConnector.compressMessages completed.");
+    // Log the structure/type AFTER assignment, BEFORE accessing length
+    console.log(`  [DEBUG] stream.js: Type of returned messages: ${typeof messages}`);
+    if (messages) {
+      console.log(`  [DEBUG] stream.js: Returned messages is Array? ${Array.isArray(messages)}`);
+      // Avoid logging full content if it's large, just check length after confirming it's an array
+      if (Array.isArray(messages)) {
+         console.log(`  [DEBUG] stream.js: Initial messages length after compress: ${messages.length}`);
+      } else {
+         console.log(`  [DEBUG] stream.js: Returned messages structure (first 200 chars): ${JSON.stringify(messages)?.substring(0, 200)}...`);
+      }
+    } else {
+      console.log("  [DEBUG] stream.js: Returned messages is null or undefined.");
+    }
+  } catch (compressError) {
+    console.error(`\x1b[31m[ERROR] stream.js: Error during LLMConnector.compressMessages: [0m`, compressError);
+    // Handle the error appropriately - maybe send an error response?
+    // For now, let's assign an empty array to messages to prevent the ReferenceError later
+    messages = []; 
+    writeResponseChunk(response, {
+      id: uuid,
+      type: "abort",
+      textResponse: null,
+      sources: [],
+      close: true,
+      error: `Failed during message compression: ${compressError.message}`,
+    });
+    return; // Exit the function if compression fails
+  }
+  // --- END LOGGING AROUND compressMessages ---
+
+  // --- BEGIN LOGGING BEFORE LLM CALL --- // Now safe to access messages.length
+  console.log(`\x1b[36m[DEBUG] stream.js: Preparing to call AiProvider.streamGetChatCompletion for workspace ${workspace.slug} [0m`);
+  console.log(`  [DEBUG] stream.js: Final message count: ${messages?.length || 0}`); // Use optional chaining just in case
+  console.log(`  [DEBUG] stream.js: contextDocuments count: ${contextDocuments?.length || 0}`);
+  if (contextDocuments?.length > 0) {
+      // Log contextDocuments content (excluding vectors) to see what's being passed
+      console.log('  [DEBUG] stream.js: contextDocuments content (vectors excluded):');
+      try {
+          console.log(JSON.stringify(contextDocuments.map(({ vector, ...rest }) => rest), null, 2));
+      } catch (e) {
+          console.error('  [DEBUG] stream.js: Error stringifying contextDocuments for logging:', e);
+      }
+  }
+  // --- END LOGGING BEFORE LLM CALL ---
+
+  // --- BEGIN LOGGING IF/ELSE STREAMING CHECK ---
+  console.log(`  [DEBUG] stream.js: Checking if streaming is enabled for ${LLMConnector.constructor.name}...`);
+  const isStreamingEnabled = LLMConnector.streamingEnabled();
+  console.log(`  [DEBUG] stream.js: LLMConnector.streamingEnabled() returned: ${isStreamingEnabled}`);
+  // --- END LOGGING IF/ELSE STREAMING CHECK ---
 
   // If streaming is not explicitly enabled for connector
   // we do regular waiting of a response and send a single chunk.
-  if (LLMConnector.streamingEnabled() !== true) {
+  if (isStreamingEnabled !== true) { // Use the stored result for the check
+    // --- BEGIN LOGGING NON-STREAMING PATH ---
     console.log(
-      `\x1b[31m[STREAMING DISABLED]\x1b[0m Streaming is not available for ${LLMConnector.constructor.name}. Will use regular chat method.`
+      `\x1b[31m[STREAMING DISABLED][0m Condition met. Entering non-streaming path for ${LLMConnector.constructor.name}.`
     );
+    // --- END LOGGING NON-STREAMING PATH ---
     const { textResponse, metrics: performanceMetrics } =
       await LLMConnector.getChatCompletion(messages, {
         temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
@@ -256,9 +311,16 @@ async function streamChatWithWorkspace(
       metrics,
     });
   } else {
-    const stream = await LLMConnector.streamGetChatCompletion(messages, contextDocuments, {
-      temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
-    });
+    // --- BEGIN LOGGING STREAMING PATH ---
+    console.log(`  [DEBUG] stream.js: Condition NOT met. Entering streaming path for ${LLMConnector.constructor.name}.`); // Assuming LLMConnector is same as LLMProvider
+    // --- END LOGGING STREAMING PATH ---
+    const stream = await LLMConnector.streamGetChatCompletion(
+      messages, // Use messages from compressMessages
+      contextDocuments, // <-- Use original full array
+      {
+        temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
+      }
+    );
     completeText = await LLMConnector.handleStream(response, stream, {
       uuid,
       sources,

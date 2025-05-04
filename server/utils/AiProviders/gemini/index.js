@@ -354,7 +354,6 @@ class GeminiLLM {
    */
   #generateContent({ userPrompt, attachments = [] }) {
     if (!attachments.length) return userPrompt;
-
     const content = [{ type: "text", text: userPrompt }];
     for (let attachment of attachments) {
       content.push({
@@ -370,52 +369,63 @@ class GeminiLLM {
 
   /**
    * Construct the user prompt for this model.
-   * @param {{attachments: import("../../helpers").Attachment[]}} param0
-   * @returns
+   * Signature reverted to accept components.
+   * @param {{systemPrompt?: string, contextDocuments?: object[], chatHistory?: object[], userPrompt?: string, attachments?: object[]}} promptArgs
+   * @returns {object[]} The final array of messages for the API call.
    */
   constructPrompt({
     systemPrompt = "",
     contextDocuments = [],
     chatHistory = [],
     userPrompt = "",
-    attachments = [], // This is the specific attachment for only this prompt
+    attachments = [], 
   }) {
-    let messages = [];
+    let finalMessages = [];
+    const formattedContext = this.#appendContext(contextDocuments);
 
-    // Prepend initial system prompt
-    // Gemini models require system prompt to be the first message & only one message.
+    // --- Log input parts for debugging ---
+    console.log(`  [DEBUG] constructPrompt: Received System Prompt: ${!!systemPrompt}`);
+    console.log(`  [DEBUG] constructPrompt: Received Context Docs Count: ${contextDocuments?.length || 0}`);
+    console.log(`  [DEBUG] constructPrompt: Received Chat History Count: ${chatHistory?.length || 0}`);
+    console.log(`  [DEBUG] constructPrompt: Received User Prompt: ${!!userPrompt}`);
+    // --- End Log ---
+
+    // 1. Add Initial System Prompt (if it exists)
     if (this.supportsSystemPrompt) {
-      // Append context directly to the system prompt content
-      messages.push({
-        role: "system",
-        content: `${systemPrompt}${this.#appendContext(contextDocuments)}`,
-      });
+      if (systemPrompt) {
+        finalMessages.push({ role: "system", content: systemPrompt });
+      }
     } else {
-      // For models that don't support system prompts, we have to inject it as the first user message
-      // and merge the context in there as well.
-      messages.push({
-        role: "user",
-        content: `${systemPrompt}${this.#appendContext(contextDocuments)}`,
-      });
-      // And then add an empty assistant response to signify the end of the "system" prompt.
-      messages.push({
-        role: "assistant",
-        content: "Okay, I will use the provided context and system instructions.",
-      });
+      // Fallback logic
+      if (systemPrompt) {
+         finalMessages.push({ role: "user", content: systemPrompt });
+         finalMessages.push({ role: "assistant", content: "Okay, I will follow those instructions." });
+      }
     }
 
-    // Add chat history (formatted)
-    messages = messages.concat(
+    // 2. Insert Formatted Context as a separate system message (if it exists)
+    if (formattedContext.length > 0) {
+       finalMessages.push({ role: "system", content: `Relevant Context:\\n${formattedContext}` });
+    }
+
+    // 3. Add Chat History (use helper to format attachments correctly)
+    finalMessages = finalMessages.concat(
       formatChatHistory(chatHistory, this.#generateContent)
-    );
+    ); 
 
-    // Add the current user prompt with its attachments
-    messages.push({
-      role: "user",
-      content: this.#generateContent({ userPrompt, attachments }),
-    });
+    // 4. Add Current User Prompt (if it exists)
+    if (userPrompt) {
+        // Use helper to format attachments for the current prompt
+        finalMessages.push({ 
+          role: "user", 
+          content: this.#generateContent({ userPrompt, attachments }) 
+        }); 
+    } else {
+        console.error("[ERROR] constructPrompt: User prompt was empty or not provided!");
+    }
 
-    return messages;
+    console.log(`  [DEBUG] constructPrompt: Returning ${finalMessages.length} final messages.`);
+    return finalMessages;
   }
 
   async getChatCompletion(messages = null, { temperature = 0.7 }) {
@@ -462,17 +472,44 @@ class GeminiLLM {
     contextDocuments = [],
     { temperature = 0.7 }
   ) {
-    // Add contextDocuments to logging
-    console.log("\x1b[34m[LLM_REQUEST_PAYLOAD][0m [Gemini - streamGetChatCompletion]");
-    console.log(JSON.stringify({ model: this.model, messages: messages, contextDocuments: contextDocuments.map(({ vector, ...rest }) => rest) }, null, 2)); // Exclude vectors from log
+    // --- BEGIN MORE DETAILED LOGGING ---
+    console.log("\\x1b[36m[DEBUG] GeminiLLM: Entered streamGetChatCompletion. [0m");
+    console.log(`  [DEBUG] GeminiLLM: Received ${messages?.length || 0} messages.`);
+    console.log(`  [DEBUG] GeminiLLM: Received ${contextDocuments?.length || 0} context documents.`);
+    console.log(`  [DEBUG] GeminiLLM: Temperature: ${temperature}`);
+    
+    console.log("  [DEBUG] GeminiLLM: About to log LLM Request Payload...");
+    // --- END MORE DETAILED LOGGING ---
 
-    // Pass contextDocuments to constructPrompt
+    // Log the messages PAYLOAD received (already potentially compressed)
+    console.log("\\x1b[34m[LLM_REQUEST_PAYLOAD] [0m [Gemini - streamGetChatCompletion]");
+    // Log the 'messages' array directly as it's the final payload for the API
+    // Also log contextDocuments for reference, though it's not directly sent in this structure anymore
+    console.log(JSON.stringify({ 
+      model: this.model, 
+      messages: messages, // Log the final messages array that will be sent
+      _contextDocumentsInput: contextDocuments.map(({ vector, ...rest }) => rest) // Log original context for debug visibility
+    }, null, 2)); 
+
+    // --- BEGIN MORE DETAILED LOGGING ---
+    console.log("  [DEBUG] GeminiLLM: Finished logging LLM Request Payload.");
+    console.log("  [DEBUG] GeminiLLM: About to call openai.chat.completions.create...");
+    // --- END MORE DETAILED LOGGING ---
+    
+    // REMOVE the call to this.constructPrompt here.
+    // The 'messages' variable already holds the final, potentially compressed, message array.
+    // const finalMessages = this.constructPrompt(messages, contextDocuments); // <-- REMOVE/COMMENT OUT
+
     const stream = await this.openai.chat.completions.create({
       model: this.model,
-      messages: this.constructPrompt(messages, contextDocuments), // Pass contextDocuments here
+      messages: messages, // <-- Use the 'messages' array received as input directly
       temperature,
       stream: true,
     });
+
+    // --- BEGIN MORE DETAILED LOGGING ---
+    console.log("  [DEBUG] GeminiLLM: openai.chat.completions.create call successful, returning stream.");
+    // --- END MORE DETAILED LOGGING ---
     return stream;
   }
 
@@ -482,8 +519,17 @@ class GeminiLLM {
 
   async compressMessages(promptArgs = {}, rawHistory = []) {
     const { messageArrayCompressor } = require("../../helpers/chat");
-    const messageArray = this.constructPrompt(promptArgs);
-    return await messageArrayCompressor(this, messageArray, rawHistory);
+    
+    // 1. Construct the full message array using the components from promptArgs
+    console.log("  [DEBUG] compressMessages: Calling constructPrompt with promptArgs...");
+    const messageArray = this.constructPrompt(promptArgs); // Call with the object
+    console.log(`  [DEBUG] compressMessages: constructPrompt returned ${messageArray?.length || 0} messages.`);
+
+    // 2. Pass the constructed array to the compressor
+    console.log("  [DEBUG] compressMessages: Calling messageArrayCompressor...");
+    const compressedMessages = await messageArrayCompressor(this, messageArray, rawHistory);
+    console.log(`  [DEBUG] compressMessages: messageArrayCompressor returned ${compressedMessages?.length || 0} messages.`);
+    return compressedMessages;
   }
 
   // Simple wrapper for dynamic embedder & normalize interface for all LLM implementations

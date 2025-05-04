@@ -40,7 +40,9 @@ function handleDefaultStreamResponseV2(response, stream, responseProps) {
     // We preserve the generated text but continue as if chat was completed
     // to preserve previously generated content.
     const handleAbort = () => {
-      stream?.endMeasurement(usage);
+      if (typeof stream?.endMeasurement === 'function') {
+        stream.endMeasurement(usage);
+      }
       clientAbortedHandler(resolve, fullText);
     };
     response.on("close", handleAbort);
@@ -99,7 +101,9 @@ function handleDefaultStreamResponseV2(response, stream, responseProps) {
             error: false,
           });
           response.removeListener("close", handleAbort);
-          stream?.endMeasurement(usage);
+          if (typeof stream?.endMeasurement === 'function') {
+            stream.endMeasurement(usage);
+          }
           resolve(fullText);
           break; // Break streaming when a valid finish_reason is first encountered
         }
@@ -114,7 +118,9 @@ function handleDefaultStreamResponseV2(response, stream, responseProps) {
         close: true,
         error: e.message,
       });
-      stream?.endMeasurement(usage);
+      if (typeof stream?.endMeasurement === 'function') {
+        stream.endMeasurement(usage);
+      }
       resolve(fullText); // Return what we currently have - if anything.
     }
   });
