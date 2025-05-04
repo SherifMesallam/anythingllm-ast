@@ -470,27 +470,34 @@ const LanceDb = {
           // Only push if UTF-8 is valid (or skip if needed based on policy)
           if (isValidUtf8) {
             const currentDocId = otherMetadata.docId || metadata.docId || null;
-            submissions.push({
+            
+            // --- BEGIN MORE DETAILED PRE-SUBMISSION LOGGING ---
+            console.log(`\x1b[36m[DEBUG] Pre-Submission Check for Chunk ${i + 1}:[0m`);
+            console.log(`  [DEBUG] vectorRecord.id: ${vectorRecord.id} (Type: ${typeof vectorRecord.id})`);
+            console.log(`  [DEBUG] vectorRecord.values length: ${vectorRecord.values?.length || 'N/A'}`);
+            if (vectorRecord.values?.length > 0) {
+              console.log(`  [DEBUG] vectorRecord.values[0] type: ${typeof vectorRecord.values[0]}`);
+            }
+            
+            const submissionObject = {
               id: vectorRecord.id,
               vector: vectorRecord.values,
-              text: cleanedChunkText, // Use potentially cleaned text
+              // text: cleanedChunkText, // <-- Still commented out
               // Minimal metadata for identification
               filePath: otherMetadata.filePath || null, 
               docId: currentDocId ?? vectorRecord.id, // <-- Use chunkId as fallback if docId is null/undefined
               chunkId: vectorRecord.id // Reference original ID if needed
-              // ...otherMetadata // <-- Temporarily disabled spreading all metadata
-            });
+              // ...otherMetadata // <-- Still commented out
+            };
+            
+            console.log(`  [DEBUG] Submission Object Keys: ${Object.keys(submissionObject).join(', ')}`);
+            console.log(`  [DEBUG] Submission Object Value Types: ${Object.values(submissionObject).map(v => typeof v).join(', ')}`);
+            // --- END MORE DETAILED PRE-SUBMISSION LOGGING ---
+
+            submissions.push(submissionObject);
           }
           // --- END TEMPORARY DEBUGGING ---
           
-          /* // Original submission logic (commented out for debugging)
-          submissions.push({
-            id: vectorRecord.id,
-            vector: vectorRecord.values,
-            text: chunkText, // Use original, non-truncated text for storage
-            ...otherMetadata // Spread the rest of the metadata
-          });
-          */
           documentVectors.push({ docId, vectorId: vectorRecord.id });
         }
       } else {
@@ -505,6 +512,25 @@ const LanceDb = {
         const totalCount = submissions.length;
         console.log(`LanceDB:addDocumentToNamespace - Total submissions to process: ${totalCount}`);
         const { client } = await this.connect();
+
+        // --- BEGIN SCHEMA LOGGING ---
+        try {
+          const tableExists = await this.namespaceExists(client, namespace);
+          if (tableExists) {
+            const table = await client.openTable(namespace);
+            console.log(`[36m[DEBUG] Existing schema for table '${namespace}':[0m`, JSON.stringify(table.schema, null, 2));
+          } else {
+            console.log(`[36m[DEBUG] Table '${namespace}' does not exist yet. Will be created with inferred schema from first batch/submission.[0m`);
+            // Log the structure of the first item as an example of what schema might be inferred
+            if (submissions.length > 0) {
+               const { vector, ...exampleData } = submissions[0]; // Exclude vector for readability
+               console.log(`  [DEBUG] Example data structure for schema inference:`, JSON.stringify(exampleData, null, 2));
+            }
+          }
+        } catch(schemaError) {
+           console.error(`[31m[ERROR] Failed to retrieve or log schema for table '${namespace}':[0m`, schemaError);
+        }
+        // --- END SCHEMA LOGGING ---
 
         if (totalCount > BATCH_SIZE) {
           // Apply batching only if total count exceeds batch size
