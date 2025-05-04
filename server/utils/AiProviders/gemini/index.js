@@ -455,24 +455,25 @@ class GeminiLLM {
     };
   }
 
-  async streamGetChatCompletion(messages = null, { temperature = 0.7 }) {
-    // --- BEGIN ADDED LOGGING ---
+  // Add contextDocuments to parameters
+  async streamGetChatCompletion(
+    messages = null,
+    // Note: contextDocuments might be large, pass it separately from simple options like temperature
+    contextDocuments = [],
+    { temperature = 0.7 }
+  ) {
+    // Add contextDocuments to logging
     console.log("\x1b[34m[LLM_REQUEST_PAYLOAD][0m [Gemini - streamGetChatCompletion]");
-    console.log(JSON.stringify({ model: this.model, messages: messages }, null, 2));
-    // --- END ADDED LOGGING ---
+    console.log(JSON.stringify({ model: this.model, messages: messages, contextDocuments: contextDocuments.map(({ vector, ...rest }) => rest) }, null, 2)); // Exclude vectors from log
 
-    const measuredStreamRequest = await LLMPerformanceMonitor.measureStream(
-      this.openai.chat.completions.create({
-        model: this.model,
-        stream: true,
-        messages,
-        temperature: temperature,
-      }),
-      messages,
-      true
-    );
-
-    return measuredStreamRequest;
+    // Pass contextDocuments to constructPrompt
+    const stream = await this.openai.chat.completions.create({
+      model: this.model,
+      messages: this.constructPrompt(messages, contextDocuments), // Pass contextDocuments here
+      temperature,
+      stream: true,
+    });
+    return stream;
   }
 
   handleStream(response, stream, responseProps) {
@@ -491,6 +492,11 @@ class GeminiLLM {
   }
   async embedChunks(textChunks = []) {
     return await this.embedder.embedChunks(textChunks);
+  }
+
+  // Helper function to ensure context chunks are properly formatted
+  #formatContextChunks(contextDocuments = []) {
+    // Implementation of #formatContextChunks method
   }
 }
 
