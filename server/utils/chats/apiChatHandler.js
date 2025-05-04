@@ -200,9 +200,7 @@ async function chatSync({
         pinnedDocIdentifiers.push(sourceIdentifier(doc));
         contextTexts.push(doc.pageContent);
         sources.push({
-          text:
-            pageContent.slice(0, 1_000) +
-            "...continued on in source document...",
+          text: pageContent,
           ...metadata,
         });
       });
@@ -554,9 +552,7 @@ async function streamChat({
         pinnedDocIdentifiers.push(sourceIdentifier(doc));
         contextTexts.push(doc.pageContent);
         sources.push({
-          text:
-            pageContent.slice(0, 1_000) +
-            "...continued on in source document...",
+          text: pageContent,
           ...metadata,
         });
       });
@@ -682,69 +678,5 @@ async function streamChat({
     console.log(
       `\x1b[31m[STREAMING DISABLED]\x1b[0m Streaming is not available for ${LLMConnector.constructor.name}. Will use regular chat method.`
     );
-    const { textResponse, metrics: performanceMetrics } =
-      await LLMConnector.getChatCompletion(messages, {
-        temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
-      });
-    completeText = textResponse;
-    metrics = performanceMetrics;
-    writeResponseChunk(response, {
-      uuid,
-      sources,
-      type: "textResponseChunk",
-      textResponse: completeText,
-      close: true,
-      error: false,
-      metrics,
-    });
-  } else {
-    const stream = await LLMConnector.streamGetChatCompletion(messages, {
-      temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
-    });
-    completeText = await LLMConnector.handleStream(response, stream, {
-      uuid,
-      sources,
-    });
-    metrics = stream.metrics;
   }
-
-  if (completeText?.length > 0) {
-    const { chat } = await WorkspaceChats.new({
-      workspaceId: workspace.id,
-      prompt: message,
-      response: {
-        text: completeText,
-        sources,
-        type: chatMode,
-        metrics,
-        attachments,
-      },
-      threadId: thread?.id || null,
-      apiSessionId: sessionId,
-      user,
-    });
-
-    writeResponseChunk(response, {
-      uuid,
-      type: "finalizeResponseStream",
-      close: true,
-      error: false,
-      chatId: chat.id,
-      metrics,
-    });
-    return;
-  }
-
-  writeResponseChunk(response, {
-    uuid,
-    type: "finalizeResponseStream",
-    close: true,
-    error: false,
-  });
-  return;
 }
-
-module.exports.ApiChatHandler = {
-  chatSync,
-  streamChat,
-};
