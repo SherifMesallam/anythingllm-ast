@@ -13,46 +13,14 @@ const arrow = require("apache-arrow");
  * @typedef {import('@lancedb/lancedb').Connection} LanceClient
  */
 
-// --- BEGIN DYNAMIC DIMENSION ---
-// Get the configured embedder and its dimension ONCE when the module loads.
-let embedderDimension = 768; // Default fallback
-let embedderName = 'Unknown';
-let embedderModel = 'Unknown';
+// --- BEGIN FORCED DIMENSION (OVERRIDE) ---
+let embedderDimension = 3072; // FORCED to text-embedding-3-large dimension
+console.warn("**********************************************************************");
+console.warn("[WARN] LanceDB: Embedder dimension is FORCED to 3072 (text-embedding-3-large).");
+console.warn("         This overrides dynamic detection. Ensure your configured embedder has 3072 dimensions.");
+console.warn("**********************************************************************");
 
-try {
-  const EmbedderEngine = getEmbeddingEngineSelection();
-  embedderName = EmbedderEngine?.constructor?.name || 'Unknown';
-  
-  // Attempt 1: Check for a direct vectorDimension property
-  if (EmbedderEngine && typeof EmbedderEngine.vectorDimension === 'number') {
-    embedderDimension = EmbedderEngine.vectorDimension;
-    console.log(`[INFO] LanceDB: Detected embedder dimension via property: ${embedderDimension}`);
-  } 
-  // Attempt 2: Specific logic for OpenAIEmbedder based on model name
-  else if (embedderName === 'OpenAiEmbedder' && EmbedderEngine.model) {
-      embedderModel = EmbedderEngine.model;
-      // Add known OpenAI model dimensions here
-      const openAiDimensions = {
-          'text-embedding-3-large': 3072,
-          'text-embedding-3-small': 1536,
-          'text-embedding-ada-002': 1536,
-          // Add other models as needed
-      };
-      if (openAiDimensions.hasOwnProperty(embedderModel)) {
-          embedderDimension = openAiDimensions[embedderModel];
-          console.log(`[INFO] LanceDB: Detected OpenAI dimension for model ${embedderModel}: ${embedderDimension}`);
-      } else {
-          console.warn(`[WARN] LanceDB: OpenAI model ${embedderModel} has unknown dimension. Falling back to default ${embedderDimension}.`);
-      }
-  } 
-  // Fallback if no dimension found
-  else {
-    console.warn(`[WARN] LanceDB: Could not detect embedder dimension automatically for ${embedderName}. Falling back to default ${embedderDimension}. Ensure EmbedderEngine instance has a 'vectorDimension' property or add model-specific logic.`);
-  }
-} catch (error) {
-  console.error(`[ERROR] LanceDB: Failed to get embedder dimension. Falling back to default ${embedderDimension}.`, error);
-}
-// --- END DYNAMIC DIMENSION ---
+// --- END FORCED DIMENSION (OVERRIDE) ---
 
 // Helper function to create loggable submission data (no vectors)
 function cleanSubmissionsForLogging(submissions) {
