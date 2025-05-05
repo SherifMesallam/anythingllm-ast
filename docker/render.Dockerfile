@@ -52,7 +52,7 @@ WORKDIR /app
 FROM base AS frontend-build
 COPY --chown=anythingllm:anythingllm ./frontend /app/frontend/
 WORKDIR /app/frontend
-RUN yarn install --network-timeout 100000 && yarn cache clean
+RUN yarn install --network-timeout 1000000 && yarn cache clean
 RUN yarn build && \
     cp -r dist /tmp/frontend-build && \
     rm -rf * && \
@@ -64,14 +64,14 @@ WORKDIR /app
 FROM base AS backend-build
 COPY ./server /app/server/
 WORKDIR /app/server
-RUN yarn install --production --network-timeout 100000 && yarn cache clean
+RUN yarn install --production --network-timeout 1000000 && yarn cache clean
 WORKDIR /app
 
 # Install collector dependencies (& puppeteer)
 COPY ./collector/ ./collector/
 WORKDIR /app/collector
 ENV PUPPETEER_DOWNLOAD_BASE_URL=https://storage.googleapis.com/chrome-for-testing-public 
-RUN yarn install --production --network-timeout 100000 && yarn cache clean
+RUN yarn install --production --network-timeout 1000000 && yarn cache clean
 
 FROM backend-build AS production-build
 WORKDIR /app
