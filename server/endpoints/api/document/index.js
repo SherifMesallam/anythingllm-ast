@@ -117,7 +117,17 @@ function apiDocumentEndpoints(app) {
         await EventLogs.logEvent("api_document_uploaded", {
           documentName: originalname,
         });
-        response.status(200).json({ success: true, error: null, documents });
+        const document = documents.shift();
+        response.status(200).json({
+          success: true,
+          document: !!document
+            ? {
+                id: document.id,
+                title: document.title,
+                file_name: document.title,
+              }
+            : null,
+        });
       } catch (e) {
         console.error(e.message, e);
         response.sendStatus(500).end();
@@ -276,7 +286,17 @@ function apiDocumentEndpoints(app) {
           documentName: originalname,
           folder,
         });
-        response.status(200).json({ success: true, error: null, documents });
+        const document = documents.shift();
+        response.status(200).json({
+          success: true,
+          document: !!document
+            ? {
+                id: document.id,
+                title: document.title,
+                file_name: document.title,
+              }
+            : null,
+        });
       } catch (e) {
         console.error(e.message, e);
         response.sendStatus(500).end();
@@ -373,7 +393,17 @@ function apiDocumentEndpoints(app) {
         await EventLogs.logEvent("api_link_uploaded", {
           link,
         });
-        response.status(200).json({ success: true, error: null, documents });
+        const document = documents.shift();
+        response.status(200).json({
+          success: true,
+          document: !!document
+            ? {
+                id: document.id,
+                title: document.title,
+                file_name: document.title,
+              }
+            : null,
+        });
       } catch (e) {
         console.error(e.message, e);
         response.sendStatus(500).end();
@@ -506,7 +536,17 @@ function apiDocumentEndpoints(app) {
         );
         await Telemetry.sendTelemetry("raw_document_uploaded");
         await EventLogs.logEvent("api_raw_document_uploaded");
-        response.status(200).json({ success: true, error: null, documents });
+        const document = documents.shift();
+        response.status(200).json({
+          success: true,
+          document: !!document
+            ? {
+                id: document.id,
+                title: document.title,
+                file_name: document.title,
+              }
+            : null,
+        });
       } catch (e) {
         console.error(e.message, e);
         response.sendStatus(500).end();

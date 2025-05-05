@@ -7,6 +7,7 @@ const {
 } = require("../../utils/files");
 const OCRLoader = require("../../utils/OCRLoader");
 const { default: slugify } = require("slugify");
+const dayjs = require("dayjs");
 
 async function asImage({ fullFilePath = "", filename = "", options = {} }) {
   let content = await new OCRLoader({
@@ -30,9 +31,8 @@ async function asImage({ fullFilePath = "", filename = "", options = {} }) {
     title: filename,
     docAuthor: "Unknown", // TODO: Find a better author
     description: "Unknown", // TODO: Find a better description
-    docSource: "a text file uploaded by the user.",
     chunkSource: "",
-    published: createdDate(fullFilePath),
+    published: dayjs().unix(),
     wordCount: content.split(" ").length,
     pageContent: content,
     token_count_estimate: tokenizeString(content),

@@ -93,22 +93,35 @@ async function chatPrompt(workspace, user = null) {
     workspace?.openAiPrompt ??
     "Given the following conversation, relevant context, and a follow up question, reply with an answer to the current question the user is asking. Return only your response to the question given the above information following the users instructions as needed.";
 
-  const metadataInstructions = `
-\n---
+  const metadataInstructions = `\n\n---
 CONTEXT & METADATA INSTRUCTIONS:
-Context sources are provided in the following format:
+Context sources are provided in the following format. Note that not all metadata keys will be present for every chunk, as they depend on the language and type of code:
 --- Context Chunk [N] ---
-Source File: [Filename/Source]
-Element Type: [Type like CLASS, METHOD, FUNCTION, or Text]
-Element Name: [Name of the element, if applicable]
-Lines: [Start-End lines in the original file, if applicable]
-Parent Context: [Parent element name, e.g., class name, if applicable]
-Relevance Score: [Similarity score of this chunk]
+Source File: [Filename/Path of the original source file]
+Language: [Detected programming language (e.g., js, php, css)]
+Feature Context: [Inferred feature/plugin/theme name based on file path]
+Element Type: [Type of code structure (e.g., CLASS, METHOD, FUNCTION, RULE, AT_RULE, code-segment)]
+Element Name: [Name of the specific function, class, method, selector, etc.]
+Parent Context: [Name of the parent structure, like a class containing a method]
+Lines: [Start-End lines in the original file]
+Summary: [Summary extracted from DocBlock/JSDoc comments, if available]
+Parameters: [(For functions/methods) List of parameters with name, type, and description]
+Returns: [(For functions/methods) Return type and description]
+Modifiers: [Keywords like public, private, static, async, abstract, final]
+Deprecated: [Indicates if the element is marked as deprecated]
+Extends: [(PHP Classes) Name of the class being extended]
+Implements: [(PHP Classes/Interfaces) List of interfaces being implemented]
+Uses: [(PHP Classes/Traits) List of traits being used]
+Registers Hooks: [(PHP) WordPress-style hooks (actions or filters) registered by this code, allowing other code to plug in.]
+Triggers Hooks: [(PHP) WordPress-style hooks (actions or filters) executed by this code, allowing other code to run or modify data.]
+CSS Selector: [(CSS Rules) The CSS selector (e.g., .my-class, #id)]
+CSS At-Rule: [(CSS AtRules) The full at-rule (e.g., @media (min-width: 600px))]
+Relevance Score: [Similarity score indicating relevance to the query]
 --- Code/Text ---
 [The actual code or text content of the chunk]
 --- End Chunk [N] ---
 
-When answering, pay close attention to the metadata provided with each context chunk, especially the Source File, Element Type, Name, and Lines, to understand the structure and origin of the code. Use this metadata to provide accurate and well-referenced answers. If referencing specific code, mention the source file and lines if available.
+When answering, pay close attention to ALL the metadata provided with each context chunk to understand the code's structure, origin, language features, and relationships (like inheritance, hooks, scope). Use this metadata to provide accurate, specific, and well-referenced answers. Prioritize information from chunks with higher relevance scores if applicable.
 ---
 `;
 

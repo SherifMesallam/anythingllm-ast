@@ -60,7 +60,8 @@ class TextSplitter {
         chunkSize: number,
         chunkOverlap: number,
         chunkHeaderMeta: object | null, // Gets appended to top of each chunk as metadata
-        filename: string | null // <-- Added: Used to determine language for code splitting
+        filename: string | null, // <-- Added: Used to determine language for code splitting
+        parseJSXAsSingleChunk: boolean | null // <-- Added: If true, forces recursive splitting for .js/.jsx files (defaults false)
       }
       ------
     */
@@ -177,8 +178,14 @@ class TextSplitter {
       this.log(`#setChunkingStrategy: Filename detected (${config.filename}), attempting language-specific strategy for extension ${fileExtension}.`);
 
       if (fileExtension === '.js' || fileExtension === '.jsx') {
-        this.log("#setChunkingStrategy: Using AST strategy for JavaScript/JSX.");
-        return 'ast-js';
+        // Check the new config option first
+        if (config.parseJSXAsSingleChunk === true) {
+          this.log("#setChunkingStrategy: parseJSXAsSingleChunk is true. Using recursive strategy for JS/JSX.");
+          return 'recursive';
+        } else {
+          this.log("#setChunkingStrategy: Using AST strategy for JavaScript/JSX.");
+          return 'ast-js';
+        }
       } else if (fileExtension === '.php') {
         this.log("#setChunkingStrategy: Using AST strategy for PHP.");
         return 'ast-php';
@@ -225,8 +232,8 @@ class TextSplitter {
       if (language === 'js') {
         this.log("[AST] #splitTextWithAST: Attempting to parse JavaScript/JSX...");
         const acorn = await import('acorn');
-        const jsx = (await import('acorn-jsx')).default; // Import jsx plugin
-        const walk = await import('acorn-walk'); // <-- Re-import acorn-walk
+        const jsx = (await import('acorn-jsx')).default; 
+        const walk = await import('acorn-walk'); // Need walk again
 
         // Array to hold comments collected during parsing
         const comments = [];
@@ -238,263 +245,264 @@ class TextSplitter {
           ecmaVersion: "latest",
           locations: true,
           ranges: true, // Essential for start/end offsets
-          // Add onComment callback to collect comments
           onComment: (isBlock, text, start, end, startLoc, endLoc) => {
-              if (isBlock) { // We are primarily interested in block comments for JSDoc
+              if (isBlock) { 
                   comments.push({ type: 'Block', value: text, start, end, loc: { start: startLoc, end: endLoc } });
               }
-              // Optionally collect line comments too if needed later
-              // else { comments.push({ type: 'Line', value: text, start, end, loc: { start: startLoc, end: endLoc } }); }
           }
         });
 
         this.log(`[AST] #splitTextWithAST: Successfully parsed JS/JSX AST. Found ${ast.body?.length || 0} top-level nodes. Collected ${comments.length} block comments.`);
 
-        // --- REVISED JS AST TRAVERSAL - Using acorn-walk for full coverage + scope ---
-        this.log("[AST Walk] Starting AST walk for full coverage...");
+        // --- REVISED JS AST TRAVERSAL - Chunk Primary Structures Recursively --- 
+        const state = { lastProcessedEndOffset: 0 };
+        const visitors = {};
 
-        // Define visitor functions
-        const visitors = {
-            // We'll add visitors for specific node types here
-            // Example: FunctionDeclaration, ClassDeclaration, VariableDeclaration, etc.
-            // The base visitor will handle traversing into children
+        // Helper to handle JSDoc parsing (copied from previous logic)
+        const parseJsDoc = (node, nodeName, nodeType) => {
+            let docComment = "";
+            let summary = "";
+            let parameters = []; 
+            let returnInfo = { type: "", description: "" }; 
+            let isDeprecated = false;
+            let relevantComment = null;
+            let minDistance = Infinity;
+            for (const comment of comments) {
+                if (comment.end < node.start) {
+                    const distance = node.start - comment.end;
+                    const interveningText = documentText.substring(comment.end, node.start);
+                    if (interveningText.trim() === '' && distance < minDistance) {
+                        if (comment.value.startsWith('*')) {
+                            relevantComment = comment;
+                            minDistance = distance;
+                        }
+                    }
+                }
+            }
+            if (relevantComment) {
+                // this.log(`[AST Recurse] Found potential JSDoc comment for ${nodeName || nodeType}`); // Comment out
+                // Clean the raw comment value before parsing
+                const cleanedValue = relevantComment.value
+                    .split('\n')
+                    .map(line => line.replace(/^\s*\*?\s?/, '')) // Remove leading whitespace, optional asterisk, optional space
+                    .join('\n')
+                    .trim(); // Trim start/end whitespace from the final cleaned value
+                
+                docComment = `/**${cleanedValue}*/`; // Use cleaned value for parsing
+                try {
+                    const parsedDoc = doctrine.parse(docComment, { unwrap: true, sloppy: true, tags: null, lineNumbers: true });
+                    summary = parsedDoc.description || "";
+                    parsedDoc.tags.forEach(tag => {
+                        switch (tag.title) {
+                            case 'param':
+                            case 'parameter':
+                            case 'arg':
+                            case 'argument':
+                                parameters.push({ name: tag.name || "", type: tag.type ? doctrine.type.stringify(tag.type) : "", description: tag.description || "" });
+                                break;
+                            case 'return':
+                            case 'returns':
+                                returnInfo.type = tag.type ? doctrine.type.stringify(tag.type) : "";
+                                returnInfo.description = tag.description || "";
+                                break;
+                            case 'deprecated':
+                                isDeprecated = true;
+                                break;
+                        }
+                    });
+                    // this.log(`[AST Recurse] Parsed JSDoc: ${parameters.length} params, ${returnInfo.type ? 'return specified' : 'no return'}`); // Comment out
+                } catch (e) {
+                    this.log(`\x1b[33m[AST Recurse] [WARN]\x1b[0m Failed to parse JSDoc comment for ${nodeName || nodeType}: ${e.message}`); // Keep WARN
+                }
+            }
+            return { docComment, summary, parameters, returnInfo, isDeprecated };
         };
 
-        // Define the walker function to handle gaps and node processing
-        const processNodeAndGaps = (node, state, type) => {
-            // 1. Handle Gap before the node
+        // Helper to process a primary node and the gap before it
+        const handlePrimaryNode = (node, nodeType, nodeName, scope, extendsClassName = null) => {
+            // 1. Handle Gap
             if (node.start > state.lastProcessedEndOffset) {
                 const gapText = documentText.substring(state.lastProcessedEndOffset, node.start);
                 if (gapText.trim()) {
-                     this.log(`[AST Walk] Found GAP text (length: ${gapText.length}) before ${type} at ${node.start}`);
+                     // this.log(`[AST Recurse] Found GAP text (length: ${gapText.length}) before ${nodeType} ${nodeName || ''} at ${node.start}`); // Comment out
                     allPotentialChunks.push({
                         text: gapText,
                         metadata: {
                             sourceType: 'code-segment',
                             language: 'js',
                             filePath: this.config.filename || "",
-                            scope: state.currentScope || 'global', // Use scope from state
-                            startLine: this.#getLineNumber(documentText, state.lastProcessedEndOffset), // Approximate line number
-                            endLine: node.loc ? node.loc.start.line -1 : this.#getLineNumber(documentText, node.start), // Approximate
+                            scope: scope, // Scope is determined by the context where the gap occurs
+                            startLine: this.#getLineNumber(documentText, state.lastProcessedEndOffset), 
+                            endLine: node.loc ? node.loc.start.line -1 : this.#getLineNumber(documentText, node.start), 
                             featureContext: this.#featureContext || ""
                         }
                     });
                 }
-                // Update offset even if gap was whitespace
-                state.lastProcessedEndOffset = node.start;
             }
 
-            // 2. Process the Node itself
+            // 2. Process Node
+            // this.log(`[AST Recurse] Processing PRIMARY Node: ${nodeType} (Name: ${nodeName || 'N/A'}), Scope: ${scope}, Range: ${node.start}-${node.end}`); // Comment out
             const nodeText = documentText.substring(node.start, node.end);
-            let chunkMetadata = {}; // Initialize metadata object
-            let isPrimaryStructure = false;
+            const jsDocData = parseJsDoc(node, nodeName, nodeType);
+            const chunkMetadata = {
+                sourceType: 'ast',
+                language: 'js',
+                filePath: this.config.filename || "",
+                nodeType: nodeType,
+                nodeName: nodeName || "",
+                scope: scope,
+                startLine: node.loc ? node.loc.start.line : this.#getLineNumber(documentText, node.start),
+                endLine: node.loc ? node.loc.end.line : this.#getLineNumber(documentText, node.end),
+                ...jsDocData, // Add parsed JSDoc fields
+                modifiers: {}, 
+                extendsClass: extendsClassName || "",
+                featureContext: this.#featureContext || ""
+            };
 
-            // Determine if it's a primary structure we want detailed metadata for
-            if (type === 'FunctionDeclaration' || type === 'ClassDeclaration' || type === 'MethodDefinition' || 
-                (type === 'VariableDeclarator' && node.init && (node.init.type === 'FunctionExpression' || node.init.type === 'ArrowFunctionExpression')))
-            {
-                isPrimaryStructure = true;
-            }
-
-            if (isPrimaryStructure) {
-                 this.log(`[AST Walk] Processing PRIMARY Node: ${type} (Name: ${node.id?.name || node.key?.name || 'N/A'}), Scope: ${state.currentScope || 'global'}, Range: ${node.start}-${node.end}`);
-                let nodeName = null;
-                let actualNodeType = type;
-                let extendsClassName = null;
-
-                // Extract Name and specific type details
-                if (type === 'FunctionDeclaration') {
-                    nodeName = node.id?.name || 'anonymous_function';
-                } else if (type === 'ClassDeclaration') {
-                    nodeName = node.id?.name || 'anonymous_class';
-                    if (node.superClass) {
-                        extendsClassName = node.superClass.name || documentText.substring(node.superClass.start, node.superClass.end);
-                    }
-                } else if (type === 'MethodDefinition') {
-                    nodeName = node.key?.name || 'anonymous_method';
-                    // Modifiers like static, async could be extracted from `node` properties if needed
-                } else if (type === 'VariableDeclarator') { // Must be the function case due to isPrimaryStructure check
-                    nodeName = node.id?.name || 'anonymous_variable_function';
-                    actualNodeType = node.init.type;
-                }
-
-                // --- JSDoc Parsing Logic ---
-                let docComment = "";
-                let summary = "";
-                let parameters = []; // Will hold { name, type, description }
-                let returnInfo = { type: "", description: "" }; // Will hold { type, description }
-                let isDeprecated = false;
-
-                // Find the closest preceding block comment for JSDoc
-                let relevantComment = null;
-                let minDistance = Infinity;
-
-                for (const comment of comments) {
-                    // Check if comment ends before the node starts
-                    if (comment.end < node.start) {
-                        // Check whitespace distance between comment end and node start
-                        const distance = node.start - comment.end;
-                        const interveningText = documentText.substring(comment.end, node.start);
-                        // Allow only whitespace between comment and node
-                        if (interveningText.trim() === '' && distance < minDistance) {
-                            // Must be a JSDoc style comment /** ... */
-                            if (comment.value.startsWith('*')) {
-                                relevantComment = comment;
-                                minDistance = distance;
-                            }
-                        }
-                    }
-                }
-
-                if (relevantComment) {
-                    this.log(`[AST Walk] Found potential JSDoc comment for ${nodeName || actualNodeType} at lines ${relevantComment.loc.start.line}-${relevantComment.loc.end.line}`);
-                    docComment = `/**${relevantComment.value}*/`; // Reconstruct full comment text
-                    try {
-                        const parsedDoc = doctrine.parse(docComment, { 
-                            unwrap: true, // Remove /** */
-                            sloppy: true, // Tolerate minor errors
-                            tags: null, // Process all known tags
-                            lineNumbers: true // Add line numbers to tags
-                        });
-                        
-                        summary = parsedDoc.description || "";
-
-                        parsedDoc.tags.forEach(tag => {
-                            switch (tag.title) {
-                                case 'param':
-                                case 'parameter':
-                                case 'arg':
-                                case 'argument':
-                                    parameters.push({
-                                        name: tag.name || "",
-                                        type: tag.type ? doctrine.type.stringify(tag.type) : "",
-                                        description: tag.description || ""
-                                    });
-                                    break;
-                                case 'return':
-                                case 'returns':
-                                    returnInfo.type = tag.type ? doctrine.type.stringify(tag.type) : "";
-                                    returnInfo.description = tag.description || "";
-                                    break;
-                                case 'deprecated':
-                                    isDeprecated = true;
-                                    // Could potentially capture deprecation message from tag.description
-                                    break;
-                                // Add cases for other tags like @throws, @see, @example if needed
-                            }
-                        });
-                        this.log(`[AST Walk] Successfully parsed JSDoc: ${parameters.length} params, ${returnInfo.type ? 'return specified' : 'no return'}`);
-                    } catch (e) {
-                        this.log(`\x1b[33m[AST Walk] [WARN]\x1b[0m Failed to parse JSDoc comment for ${nodeName || actualNodeType}: ${e.message}`);
-                        // Keep docComment raw if parsing fails
-                    }
-                }
-                // --- End JSDoc Parsing ---
-
-                chunkMetadata = {
-                    sourceType: 'ast',
-                    language: 'js',
-                    filePath: this.config.filename || "",
-                    nodeType: actualNodeType,
-                    nodeName: nodeName || "",
-                    scope: state.currentScope || 'global',
-                    startLine: node.loc ? node.loc.start.line : this.#getLineNumber(documentText, node.start),
-                    endLine: node.loc ? node.loc.end.line : this.#getLineNumber(documentText, node.end),
-                    // Populate with parsed JSDoc data
-                    docComment: docComment,
-                    summary: summary,
-                    parameters: parameters, // Array of objects
-                    returnType: returnInfo.type,
-                    returnDescription: returnInfo.description,
-                    isDeprecated: isDeprecated,
-                    modifiers: {}, // TODO: Populate if needed
-                    extendsClass: extendsClassName || "",
-                    featureContext: this.#featureContext || ""
-                };
-
-            } else {
-                // Handle other node types as generic code segments
-                 this.log(`[AST Walk] Processing OTHER Node: ${type}, Scope: ${state.currentScope || 'global'}, Range: ${node.start}-${node.end}`);
-                 chunkMetadata = {
-                     sourceType: 'code-segment',
-                     language: 'js',
-                     filePath: this.config.filename || "",
-                     nodeType: type,
-                     nodeName: null, // Not applicable or generic
-                     scope: state.currentScope || 'global',
-                     startLine: node.loc ? node.loc.start.line : this.#getLineNumber(documentText, node.start),
-                     endLine: node.loc ? node.loc.end.line : this.#getLineNumber(documentText, node.end),
-                     featureContext: this.#featureContext || ""
-                 };
-            }
-
-            // Add the created chunk to potential chunks if text is not empty
             if (nodeText.trim()) {
-                 allPotentialChunks.push({ text: nodeText, metadata: chunkMetadata });
+                allPotentialChunks.push({ text: nodeText, metadata: chunkMetadata });
             } else {
-                 this.log(`[AST Walk] Skipping Node ${type} - Extracted text is empty.`);
+                // this.log(`[AST Recurse] Skipping Primary Node ${nodeType} - Extracted text is empty.`); // Comment out
             }
-            // --- Node Processing Logic END ---
 
-            // 3. Update last processed offset to the end of the current node
+            // 3. Update state
             state.lastProcessedEndOffset = node.end;
+        };
+        
+        // --- Define Visitors --- 
+        // We use fullAncestor to easily determine scope, but manually control recursion
 
-            // 4. Define the next state for children (Update scope if needed)
-            let nextState = { ...state };
-            let isScopeDefiningNode = false;
-             if (type === 'FunctionDeclaration' || type === 'FunctionExpression' || type === 'ArrowFunctionExpression') {
-                 const funcName = node.id?.name || (type === 'ArrowFunctionExpression' ? 'arrow_func' : 'anonymous_func');
-                 nextState.currentScope = `${state.currentScope || 'global'} > function:${funcName}`;
-                 isScopeDefiningNode = true;
-             } else if (type === 'ClassDeclaration' || type === 'ClassExpression') {
-                 const className = node.id?.name || 'anonymous_class';
-                 nextState.currentScope = `${state.currentScope || 'global'} > class:${className}`;
-                 isScopeDefiningNode = true;
-             } else if (type === 'MethodDefinition') {
-                 const methodName = node.key?.name || 'anonymous_method';
-                 // Scope should already be inside a class here
-                 nextState.currentScope = `${state.currentScope || 'global'} > method:${methodName}`;
-                 isScopeDefiningNode = true;
-             }
+        const visitorCallback = (node, st, ancestors, type) => {
+            // Determine current scope using ancestors
+            let currentScope = 'global';
+            for (let i = ancestors.length - 2; i >= 0; i--) {
+                const ancestor = ancestors[i];
+                let namePart = '', typePart = '';
+                if (ancestor.type === 'FunctionDeclaration' || ancestor.type === 'FunctionExpression' || ancestor.type === 'ArrowFunctionExpression') {
+                    typePart = 'function';
+                    namePart = ancestor.id?.name || (ancestor.type === 'ArrowFunctionExpression' ? 'arrow_func' : 'anonymous_func');
+                } else if (ancestor.type === 'ClassDeclaration' || ancestor.type === 'ClassExpression') {
+                    typePart = 'class';
+                    namePart = ancestor.id?.name || 'anonymous_class';
+                } else if (ancestor.type === 'MethodDefinition') {
+                    typePart = 'method';
+                    namePart = ancestor.key?.name || 'anonymous_method';
+                } 
+                // Add more scope types if needed
+                if (typePart) {
+                    currentScope = `${typePart}:${namePart} > ${currentScope}`;
+                }
+            }
 
-            // 5. Continue walk: Call base visitor for the node type to process children
-            // Pass the potentially updated state (nextState)
-            walk.base[type](node, nextState, processNodeAndGaps); // Essential: Use the base visitor
+            let isPrimary = false;
+            let nodeName = null;
+            let actualNodeType = type;
+            let extendsClassName = null;
+            let processNode = false; // Flag to indicate if we should process this node as primary
+
+            if (type === 'FunctionDeclaration') {
+                isPrimary = true;
+                processNode = true;
+                nodeName = node.id?.name || 'anonymous_function';
+            } else if (type === 'ClassDeclaration') {
+                isPrimary = true;
+                processNode = true;
+                nodeName = node.id?.name || 'anonymous_class';
+                 if (node.superClass) {
+                     extendsClassName = node.superClass.name || documentText.substring(node.superClass.start, node.superClass.end);
+                 }
+            } else if (type === 'MethodDefinition') {
+                 isPrimary = true;
+                 processNode = true;
+                 nodeName = node.key?.name || 'anonymous_method';
+            } else if (type === 'VariableDeclaration') {
+                 // Check if its declarators are function/arrow functions
+                 const primaryDeclarator = node.declarations.find(decl =>
+                    decl.init && (decl.init.type === 'FunctionExpression' || decl.init.type === 'ArrowFunctionExpression')
+                 );
+                 if (primaryDeclarator) {
+                     isPrimary = true;
+                     processNode = true;
+                     nodeName = primaryDeclarator.id?.name || 'anonymous_variable_function';
+                     actualNodeType = primaryDeclarator.init.type; 
+                 }
+            } else if (type === 'AssignmentExpression') {
+                // Check if assigning a function
+                if (node.right.type === 'FunctionExpression' || node.right.type === 'ArrowFunctionExpression') {
+                    isPrimary = true;
+                    processNode = true;
+                    // Attempt to get a name from the left side (e.g., identifier, member expression)
+                    if (node.left.type === 'Identifier') {
+                        nodeName = node.left.name;
+                    } else if (node.left.type === 'MemberExpression' && node.left.property.type === 'Identifier') {
+                         // Handle cases like obj.prop = function() { ... }
+                         // For simplicity, just use the property name. Could traverse node.left fully for obj.prop.subprop etc.
+                        nodeName = node.left.property.name;
+                    } else {
+                        nodeName = 'anonymous_assigned_function';
+                    }
+                    actualNodeType = node.right.type;
+                }
+            } else if (type === 'CallExpression') {
+                // Check for IIFE pattern: (function(){...})()
+                if (node.callee.type === 'FunctionExpression') {
+                    isPrimary = true;
+                    processNode = true;
+                    nodeName = node.callee.id?.name || 'anonymous_iife'; 
+                    actualNodeType = type; // Keep as CallExpression, JSDoc likely won't apply directly here
+                }
+            }
+
+            if (processNode) {
+                handlePrimaryNode(node, actualNodeType, nodeName, currentScope, extendsClassName);
+                // DO NOT continue walk into children of primary nodes
+            } else {
+                 // If not processing this node as primary, DO NOTHING here.
+                 // walk.fullAncestor will use walk.base to continue traversal into children automatically.
+                 // Ensure offset is updated ONLY when a primary node is handled.
+                 // The offset is managed within handlePrimaryNode.
+                 /*
+                 // Old logic - remove manual continuation attempts
+                 if (node.start > st.lastProcessedEndOffset) {
+                    walk.base[type](node, st, visitorCallback); // Manually continue walk for non-primary nodes
+                 } else {
+                    walk.base[type](node, st, visitorCallback); // Manually continue walk for non-primary nodes
+                 }
+                 */
+            }
+            // NOTE: Descent into children is now implicitly handled by fullAncestor + walk.base
+            // for non-primary nodes, and explicitly stopped for primary nodes.
         };
 
+        // Use fullAncestor to get scope, but the callback manually controls recursion depth
+        this.log("[AST Recurse] Initiating controlled walk...");
+        walk.fullAncestor(ast, visitorCallback, null, state);
+        this.log("[AST Recurse] Controlled walk finished.");
 
-        // Start the walk from the root AST node
-        this.log("[AST Walk] Initiating recursive walk...");
-        walk.recursive(ast, { lastProcessedEndOffset: 0, currentScope: 'global' }, processNodeAndGaps);
-        this.log("[AST Walk] Recursive walk finished.");
-
-        // Handle any trailing code after the last processed node
-        if (lastProcessedEndOffset < documentText.length) {
-            const trailingText = documentText.substring(lastProcessedEndOffset);
+        // Handle any trailing code after the last processed primary node/gap
+        if (state.lastProcessedEndOffset < documentText.length) {
+            const trailingText = documentText.substring(state.lastProcessedEndOffset);
             if (trailingText.trim()) {
-                 this.log(`[AST Walk] Found TRAILING text (length: ${trailingText.length}) after last node.`);
+                 // this.log(`[AST Recurse] Found TRAILING text (length: ${trailingText.length}) after last processed offset.`); // Comment out
                  allPotentialChunks.push({
                     text: trailingText,
                     metadata: {
                         sourceType: 'code-segment',
                         language: 'js',
                         filePath: this.config.filename || "",
-                        scope: 'global', // Trailing code is likely global scope
-                        startLine: this.#getLineNumber(documentText, lastProcessedEndOffset), // Approximate
-                        endLine: this.#getLineNumber(documentText, documentText.length), // Approximate
+                        scope: 'global', // Assume trailing is global
+                        startLine: this.#getLineNumber(documentText, state.lastProcessedEndOffset), 
+                        endLine: this.#getLineNumber(documentText, documentText.length), 
                         featureContext: this.#featureContext || ""
                     }
                  });
             }
         }
 
-        this.log(`[AST Walk] Finished walk and gap analysis. ${allPotentialChunks.length} potential chunks identified (including gaps and all nodes).`);
+        this.log(`[AST Recurse] Finished walk and gap analysis. ${allPotentialChunks.length} potential chunks identified.`);
         // --- END REVISED JS AST TRAVERSAL ---
 
-        // The rest of the logic (checking chunk sizes, recursive fallback for large chunks)
-        // will now operate on `allPotentialChunks` instead of `astNodesToChunk`
-
-        // (Keep the existing PHP and CSS blocks below)
+        // (Keep the rest: PHP/CSS blocks, chunk size checking, etc.)
 
       } else if (language === 'php') {
         this.log("[AST] #splitTextWithAST: Attempting to parse PHP...");
@@ -507,9 +515,9 @@ class TextSplitter {
         this.log(`[AST] #splitTextWithAST: Successfully parsed PHP AST. Found ${ast.children?.length || 0} top-level nodes.`);
 
         ast.children.forEach((node, index) => {
-          this.log(`[AST] #splitTextWithAST: Processing PHP AST node ${index + 1}/${ast.children.length} - Kind: ${node.kind}`);
+          // this.log(`[AST] #splitTextWithAST: Processing PHP AST node ${index + 1}/${ast.children.length} - Kind: ${node.kind}`); // Comment out per-node log
 
-          // --- BEGIN HOOK DETECTION --- 
+          // --- PHP Hook Detection --- 
           let isHookCall = false;
           if (node.kind === 'expressionstatement' && node.expression.kind === 'call') {
             const call = node.expression;
@@ -524,38 +532,71 @@ class TextSplitter {
                   filePath: this.config.filename || "",
                   startLine: nodeStartLine,
                   endLine: nodeEndLine,
-                  featureContext: this.#featureContext || "", // Add feature context
-                  registersHooks: [], // Initialize as empty array
-                  triggersHooks: [], // Initialize as empty array
+                  featureContext: this.#featureContext || "",
+                  registersHooks: [],
+                  triggersHooks: [],
               };
 
-              if (['add_action', 'add_filter'].includes(funcName)) {
+              let hookName = 'unknown_hook'; // Initialize hookName
+              const isGfHook = funcName.startsWith('gf_');
+
+              // Determine Hook Name based on function type
+              if (isGfHook) {
+                if (call.arguments[0]?.kind === 'array' && call.arguments[0]?.items?.length > 0) {
+                  // GF hooks use an array [hook_name, form_id] as the first arg
+                  hookName = call.arguments[0].items[0]?.value || 'unknown_gf_hook_name';
+                  // this.log(`[AST PHP] Detected GF Hook Structure. Extracted Hook Name: ${hookName}`); // Comment out
+                } else {
+                  hookName = 'unknown_gf_hook_array';
+                  this.log(`[AST PHP] [WARN] Detected GF Hook Call (${funcName}) but first argument was not the expected array structure.`);
+                }
+              } else if ([ 'add_action', 'add_filter', 'do_action', 'apply_filters' ].includes(funcName)) {
+                 // Standard WP hooks use a string literal as the first arg
+                 hookName = call.arguments[0]?.value || 'unknown_wp_hook_name';
+                 // this.log(`[AST PHP] Detected WP Hook Structure. Extracted Hook Name: ${hookName}`); // Comment out
+              }
+
+              // --- Process Hook Registration (add_action, add_filter, gf_do_action, gf_apply_filters) --- 
+              // Note: Using startsWith('add_') or startsWith('gf_') for broader matching
+              if (funcName.startsWith('add_') || funcName === 'gf_apply_filters' || funcName === 'gf_do_action') {
                   isHookCall = true;
-                  hookMetadata.nodeType = 'hookRegistration';
-                  const hookName = call.arguments[0]?.value || 'unknown_hook'; // Arg 0: Hook name (string literal)
-                  // Use #getCodeFromRange for the callback argument node
-                  const callbackNode = call.arguments[1];
+                  hookMetadata.nodeType = isGfHook ? 'gfHookRegistration' : 'wpHookRegistration';
+                  // Use the correctly extracted hookName from above
+                  
+                  // Callback is arg 1 for WP add_, arg 1 for GF filter/action (after array)
+                  const callbackArgIndex = 1; 
+                  const priorityArgIndex = 2;
+                  const acceptedArgsArgIndex = 3;
+                  
+                  const callbackNode = call.arguments[callbackArgIndex];
                   const callback = callbackNode ? this.#getCodeFromRange(documentText, callbackNode.loc?.start?.offset, callbackNode.loc?.end?.offset) : 'unknown_callback';
-                  const priority = call.arguments[2]?.value || 10; // Arg 2: Priority
-                  const acceptedArgs = call.arguments[3]?.value || 1; // Arg 3: Accepted Args
+                  const priority = call.arguments[priorityArgIndex]?.value ?? 10; // Use nullish coalescing for default
+                  const acceptedArgs = call.arguments[acceptedArgsArgIndex]?.value ?? 1;
+
+                  let hookType = '';
+                  if (funcName.includes('action')) hookType = 'action';
+                  else if (funcName.includes('filter')) hookType = 'filter';
+                  
                   hookMetadata.registersHooks.push({ 
                       hookName, 
                       callback, 
-                      type: funcName === 'add_action' ? 'action' : 'filter', 
+                      type: hookType, 
                       priority, 
                       acceptedArgs 
                   });
-                  this.log(`[AST] Detected Hook Registration: ${funcName}('${hookName}')`);
+                  // this.log(`[AST PHP] Detected Hook Registration: ${funcName}('${hookName}')`); // Comment out
                   allPotentialChunks.push({ text: nodeText, metadata: hookMetadata });
+              
+              // --- Process Hook Trigger (do_action, apply_filters) --- 
               } else if (['do_action', 'apply_filters'].includes(funcName)) {
                   isHookCall = true;
-                  hookMetadata.nodeType = 'hookTrigger';
-                  const hookName = call.arguments[0]?.value || 'unknown_hook'; // Arg 0: Hook name
-                   hookMetadata.triggersHooks.push({ 
+                  hookMetadata.nodeType = 'wpHookTrigger';
+                  // Use the correctly extracted hookName (already derived above)
+                  hookMetadata.triggersHooks.push({ 
                       hookName, 
                       type: funcName === 'do_action' ? 'action' : 'filter'
                   });
-                  this.log(`[AST] Detected Hook Trigger: ${funcName}('${hookName}')`);
+                  // this.log(`[AST PHP] Detected Hook Trigger: ${funcName}('${hookName}')`); // Comment out
                   allPotentialChunks.push({ text: nodeText, metadata: hookMetadata });
               }
             }
@@ -567,7 +608,7 @@ class TextSplitter {
           // Check for Class or Trait context first
           if (node.kind === 'class' || node.kind === 'trait') {
             const parentClassName = node.name?.name || (typeof node.name === 'string' ? node.name : null);
-            this.log(`[AST] #splitTextWithAST: Entering PHP ${node.kind} context: ${parentClassName}`);
+            // this.log(`[AST] #splitTextWithAST: Entering PHP ${node.kind} context: ${parentClassName}`); // Comment out
             // Add the class/trait definition itself
             this.#addPhpNodeToChunks(node, documentText, allPotentialChunks, null);
 
@@ -587,7 +628,7 @@ class TextSplitter {
           // Process other top-level nodes (functions, namespaces, statements)
           this.#addPhpNodeToChunks(node, documentText, allPotentialChunks, null);
         });
-      } else if (language === 'css') { // <-- Add CSS block
+      } else if (language === 'css') {
         this.log("[AST] #splitTextWithAST: Attempting to parse CSS with PostCSS...");
         const ast = postcss.parse(documentText, { from: this.config.filename || 'unknown.css' });
         this.log(`[AST] #splitTextWithAST: Successfully parsed CSS AST. Found ${ast.nodes?.length || 0} top-level nodes.`);
@@ -595,7 +636,7 @@ class TextSplitter {
         ast.walk(node => {
           // Process Rules (e.g., .class { ... })
           if (node.type === 'rule') {
-            this.log(`[AST] #splitTextWithAST: Processing CSS Rule: ${node.selector}`);
+            // this.log(`[AST] #splitTextWithAST: Processing CSS Rule: ${node.selector}`); // Comment out
             if (node.source?.start && node.source?.end) {
               const startLine = node.source.start.line;
               const endLine = node.source.end.line;
@@ -612,18 +653,18 @@ class TextSplitter {
                 // featureContext added later
               };
               // --- BEGIN ADDED LOGGING ---
-              this.log(`[AST] Helper: Final Chunk Metadata (CSS Rule ${metadata.selector}):`, JSON.stringify(metadata, null, 2));
+              // this.log(`[AST] Helper: Final Chunk Metadata (CSS Rule ${metadata.selector}):`, JSON.stringify(metadata, null, 2)); // Comment out
               // --- END ADDED LOGGING ---
               if (text.trim()) {
                 allPotentialChunks.push({ text, metadata });
               }
             } else {
-                 this.log(`[AST] Helper: Skipping CSS Rule (Selector: ${node.selector}) - No source location info.`);
+                 // this.log(`[AST] Helper: Skipping CSS Rule (Selector: ${node.selector}) - No source location info.`); // Comment out
             }
           }
           // Process At-Rules (e.g., @media { ... })
           else if (node.type === 'atrule') {
-            this.log(`[AST] #splitTextWithAST: Processing CSS AtRule: @${node.name} ${node.params}`);
+            // this.log(`[AST] #splitTextWithAST: Processing CSS AtRule: @${node.name} ${node.params}`); // Comment out
              if (node.source?.start && node.source?.end) {
               const startLine = node.source.start.line;
               const endLine = node.source.end.line;
@@ -641,13 +682,13 @@ class TextSplitter {
                 // featureContext added later
               };
               // --- BEGIN ADDED LOGGING ---
-              this.log(`[AST] Helper: Final Chunk Metadata (CSS AtRule @${metadata.atRuleName}):`, JSON.stringify(metadata, null, 2));
+              // this.log(`[AST] Helper: Final Chunk Metadata (CSS AtRule @${metadata.atRuleName}):`, JSON.stringify(metadata, null, 2)); // Comment out
               // --- END ADDED LOGGING ---
               if (text.trim()) {
                 allPotentialChunks.push({ text, metadata });
               }
             } else {
-                 this.log(`[AST] Helper: Skipping CSS AtRule (@${node.name}) - No source location info.`);
+                 // this.log(`[AST] Helper: Skipping CSS AtRule (@${node.name}) - No source location info.`); // Comment out
             }
           }
           // We are not iterating Declarations (prop: value) individually for now
@@ -661,21 +702,17 @@ class TextSplitter {
       for (const potentialChunk of allPotentialChunks) {
         // Check if text exists and is not just whitespace before processing
         if (!potentialChunk.text || !potentialChunk.text.trim()) {
-            this.log(`[AST] #splitTextWithAST: Skipping empty or whitespace-only potential chunk.`);
+            // this.log(`[AST] #splitTextWithAST: Skipping empty or whitespace-only potential chunk.`); // Comment out
             continue;
         }
 
-        this.log(`[AST] #splitTextWithAST: Processing potential chunk (Type: ${potentialChunk.metadata.nodeType || potentialChunk.metadata.sourceType}, Scope: ${potentialChunk.metadata.scope}, Lines: ${potentialChunk.metadata.startLine}-${potentialChunk.metadata.endLine}), length ${potentialChunk.text.length}.`);
+        // this.log(`[AST] #splitTextWithAST: Processing potential chunk (Type: ${potentialChunk.metadata.nodeType || potentialChunk.metadata.sourceType}, Scope: ${potentialChunk.metadata.scope}, Lines: ${potentialChunk.metadata.startLine}-${potentialChunk.metadata.endLine}), length ${potentialChunk.text.length}.`); // Comment out verbose chunk details
         if (potentialChunk.text.length > chunkSize) {
-          // Determine a more specific fallback type based on the original chunk's sourceType
-          const fallbackSourceType = potentialChunk.metadata.sourceType === 'code-segment'
-              ? 'code-segment-recursive-fallback'
-              : 'ast-recursive-fallback'; // Assume others are AST nodes initially
-
+          // Keep WARN log for large chunks
           this.log(`\x1b[33m[AST] [WARN]\x1b[0m Chunk (Type: ${potentialChunk.metadata.nodeType || potentialChunk.metadata.sourceType}, Scope: ${potentialChunk.metadata.scope}, Lines: ${potentialChunk.metadata.startLine}-${potentialChunk.metadata.endLine}) for ${language} exceeds chunkSize (${potentialChunk.text.length}/${chunkSize}). Falling back to recursive splitting for this specific chunk.`);
           const recursiveSplitter = this.#getRecursiveSplitter();
           const subChunks = await recursiveSplitter.splitText(potentialChunk.text);
-          this.log(`[AST] #splitTextWithAST: Recursive fallback generated ${subChunks.length} sub-chunks.`);
+          // this.log(`[AST] #splitTextWithAST: Recursive fallback generated ${subChunks.length} sub-chunks.`); // Comment out sub-chunk count
           // Wrap sub-chunks in metadata structure
           subChunks.forEach(subChunkText => {
             if (subChunkText.trim()) { // Ensure sub-chunk is not just whitespace
@@ -684,7 +721,7 @@ class TextSplitter {
                 metadata: {
                   ...potentialChunk.metadata, // Inherit original metadata (like scope, nodeType etc.)
                   featureContext: this.#featureContext, // Ensure feature context
-                  sourceType: fallbackSourceType, // Mark as recursive fallback
+                  sourceType: 'ast-recursive-fallback', // Mark as recursive fallback
                   isSubChunk: true, // Mark as sub-chunk
                   // Overwrite line numbers as they are now relative to the sub-chunk
                   startLine: 0,
@@ -695,7 +732,7 @@ class TextSplitter {
             }
           });
         } else {
-          this.log(`[AST] #splitTextWithAST: Potential chunk (Type: ${potentialChunk.metadata.nodeType || potentialChunk.metadata.sourceType}, Scope: ${potentialChunk.metadata.scope}, Lines: ${potentialChunk.metadata.startLine}-${potentialChunk.metadata.endLine}) is within size limit. Adding directly.`);
+          // this.log(`[AST] #splitTextWithAST: Potential chunk (Type: ${potentialChunk.metadata.nodeType || potentialChunk.metadata.sourceType}, Scope: ${potentialChunk.metadata.scope}, Lines: ${potentialChunk.metadata.startLine}-${potentialChunk.metadata.endLine}) is within size limit. Adding directly.`); // Comment out
           // Add feature context to the existing metadata before pushing
           potentialChunk.metadata.featureContext = this.#featureContext;
            // Add filePath
@@ -786,32 +823,87 @@ class TextSplitter {
 
       // Existing DocBlock Parsing logic
       if (node.leadingComments && node.leadingComments.length > 0) {
-        // ... (rest of DocBlock parsing, assigning to initialized variables) ...
+        const leadingComment = node.leadingComments[node.leadingComments.length - 1]; // Use the last comment block before the node
+        if (leadingComment.type === 'CommentBlock' || leadingComment.type === 'Block') { // Check comment type
+          docComment = leadingComment.value;
+          try {
+            const parsedDoc = doctrine.parse( `/**${docComment}*/`, { unwrap: true, sloppy: true });
+             summary = parsedDoc.description || "";
+             isDeprecated = parsedDoc.tags.some(tag => tag.title === 'deprecated');
+             docParams = parsedDoc.tags.filter(tag => ['param', 'parameter', 'arg', 'argument'].includes(tag.title)).map(tag => ({
+               name: tag.name || "",
+               type: tag.type ? doctrine.type.stringify(tag.type) : "",
+               description: tag.description || ""
+             }));
+             const returnTag = parsedDoc.tags.find(tag => ['return', 'returns'].includes(tag.title));
+             if (returnTag) {
+                docReturnType = {
+                  type: returnTag.type ? doctrine.type.stringify(returnTag.type) : "",
+                  description: returnTag.description || ""
+                };
+             }
+             // this.log(`[AST] Helper: Parsed DocBlock for ${nodeName || node.kind}. Summary: ${summary ? 'Yes' : 'No'}, Params: ${docParams.length}, Returns: ${docReturnType ? 'Yes' : 'No'}`); // Comment out
+          } catch (e) {
+             this.log(`\x1b[33m[AST] [WARN]\x1b[0m Failed to parse DocBlock for ${nodeName || node.kind}: ${e.message}`); // Keep WARN
+          }
+        }
       }
 
       // Existing Signature Parameter logic
       if (node.params && Array.isArray(node.params)) {
-        // ... (assigns to initialized signatureParams) ...
+        signatureParams = node.params.map(param => ({
+          name: param.name?.name || "", // Get name safely
+          type: param.type ? (typeof param.type === 'string' ? param.type : (param.type?.name || "")) : "", // Get type safely
+          isOptional: param.nullable || param.value !== null, // Check if nullable or has default value
+          defaultValue: param.value ? this.#getCodeFromRange(documentText, param.value.loc?.start?.offset, param.value.loc?.end?.offset) : null
+        }));
       }
 
       // Existing Signature Return Type logic
       if (node.returnType) {
-        // ... (assigns to initialized signatureReturnType) ...
+        signatureReturnType = typeof node.returnType === 'string' ? node.returnType : (node.returnType.name || "");
       }
 
       // Existing Class/Trait detail logic
       if (['class', 'interface', 'trait'].includes(node.kind)) {
-        // ... (assigns to initialized extendsClassName, implementsInterfaces, usesTraits) ...
+        if (node.extends) {
+          extendsClassName = node.extends.name || "";
+        }
+        if (node.implements && Array.isArray(node.implements)) {
+          implementsInterfaces = node.implements.map(impl => impl.name || "");
+        }
+         if (node.kind === 'class' || node.kind === 'trait') { // Traits can use other traits
+             const useGroup = node.body?.find(item => item.kind === 'usegroup');
+             if (useGroup && useGroup.items) {
+                 usesTraits = useGroup.items.map(item => item.name?.name || "");
+             }
+         }
       }
 
       // Existing Modifier logic
       if (['class', 'interface', 'trait', 'method', 'property', 'classconstant'].includes(node.kind) && node.flags !== undefined) {
-        // ... (populates initialized modifiers object) ...
+        modifiers.isStatic = (node.flags & 1) !== 0; // FLAG_STATIC
+        modifiers.isAbstract = (node.flags & 2) !== 0; // FLAG_ABSTRACT
+        modifiers.isFinal = (node.flags & 4) !== 0; // FLAG_FINAL
+        modifiers.visibility = (node.flags & 16) ? 'public' : ((node.flags & 32) ? 'protected' : ((node.flags & 64) ? 'private' : 'public')); // Simplified visibility check
       }
+       // Add async for JS methods/functions if applicable (though flags are PHP specific)
+       // In Acorn AST, async property is directly on FunctionDeclaration/MethodDefinition etc.
+       if (node.async === true) { // Check JS async property
+           modifiers.isAsync = true;
+       }
+
 
       // Existing Metadata Consolidation logic
       const finalParameters = signatureParams.map(sigParam => {
-        // ... (uses initialized variables) ...
+        const docParam = docParams.find(dp => dp.name === sigParam.name);
+        return {
+          name: sigParam.name,
+          type: sigParam.type || docParam?.type || "",
+          description: docParam?.description || "",
+          isOptional: sigParam.isOptional,
+          defaultValue: sigParam.defaultValue
+        };
       });
       const finalReturnType = signatureReturnType || docReturnType?.type || "";
       const finalReturnDescription = docReturnType?.description || "";
@@ -823,44 +915,44 @@ class TextSplitter {
         filePath: this.config.filename || "",
         nodeType: node.kind || "",
         nodeName: nodeName || "",
-        parentName: parentName || "",
+        parentName: parentName || "", // Name of the parent class/trait if applicable
         startLine: startLine,
         endLine: endLine,
-        docComment: docComment || "",
-        summary: summary || "",
-        parameters: finalParameters.length > 0 ? finalParameters : [],
+        featureContext: this.#featureContext || "", // Add feature context
+        // --- Start: Adding specific metadata ---
+        summary: summary,
+        parameters: finalParameters, // Array of { name, type, description, isOptional, defaultValue }
         returnType: finalReturnType,
         returnDescription: finalReturnDescription,
         isDeprecated: isDeprecated,
-        modifiers: Object.keys(modifiers).length > 0 ? modifiers : {},
-        extendsClass: extendsClassName || "",
-        implementsInterfaces: implementsInterfaces.length > 0 ? implementsInterfaces : [],
-        usesTraits: usesTraits.length > 0 ? usesTraits : [],
+        modifiers: modifiers, // Object like { isStatic: bool, visibility: 'public'|'protected'|'private', etc. }
+        extendsClass: extendsClassName, // For classes
+        implementsInterfaces: implementsInterfaces, // For classes/interfaces
+        usesTraits: usesTraits, // For classes/traits
+        registersHooks: node.registersHooks || [], // Add from hook detection if present
+        triggersHooks: node.triggersHooks || [], // Add from hook detection if present
+        // --- End: Adding specific metadata ---
       };
 
       // --- BEGIN ADDED LOGGING ---
-      this.log(`[AST] Helper: Final Chunk Metadata (PHP Node ${nodeName || node.kind}):`, JSON.stringify(chunkMetadata, null, 2));
+      // this.log(`[AST] Helper: Final Chunk Metadata (PHP ${chunkMetadata.nodeType} ${chunkMetadata.nodeName || ''}):`, JSON.stringify(chunkMetadata, (key, value) => typeof value === 'bigint' ? value.toString() : value, 2)); // Comment out detailed metadata log
       // --- END ADDED LOGGING ---
 
-      this.log(`[AST] Helper: Identified PHP Node (Kind: ${node.kind}, Name: ${nodeName}, Parent: ${parentName}, Lines: ${startLine}-${endLine})`);
       if (text.trim()) {
-        this.log(`[AST] Helper: Extracted PHP text snippet (length: ${text.length}). Adding to potential chunks.`);
         chunkArray.push({ text, metadata: chunkMetadata });
+      } else {
+         // this.log(`[AST] Helper: Skipping PHP Node ${chunkMetadata.nodeType} - Extracted text is empty.`); // Comment out
       }
     } else {
-      this.log(`[AST] Helper: Skipping PHP Node (Kind: ${node?.kind}) - No location/offset info.`);
+       // this.log(`[AST] Helper: Skipping PHP Node - No location info.`); // Comment out
     }
   }
 
-  // Helper to add CSS node chunk with metadata
-  #addCssNodeToChunks(node, documentText, chunkArray) {
-     // ... rest of #addCssNodeToChunks logic remains unchanged ...
-  }
 
-  // New private method to determine feature context from filename/path
-  #determineFeatureContext(filename = null) {
-    if (!filename || typeof filename !== 'string') {
-      this.log("#determineFeatureContext: No filename provided, cannot determine feature context.");
+  // Helper to determine a "feature" context based on file path patterns
+  #determineFeatureContext(filename) {
+    if (!filename) {
+      this.log("#determineFeatureContext: No filename provided. No feature context.");
       return "";
     }
 
@@ -879,7 +971,7 @@ class TextSplitter {
         // Check if the next part is not the filename itself (meaning it's a directory)
         if (includesIndex + 2 < parts.length) {
           const featureName = parts[includesIndex + 1];
-          this.log(`#determineFeatureContext: Found 'includes' pattern. Feature context: "${featureName}"`);
+          this.log(`#determineFeatureContext: Found 'includes' pattern. Feature context: \"${featureName}\"`);
           return featureName;
         } else {
           // File is directly inside /includes/ (e.g., includes/init.php)
@@ -898,26 +990,78 @@ class TextSplitter {
     if (assetsIndex !== -1 && assetsIndex + 1 < parts.length && parts[assetsIndex + 1] === 'src') {
       // Check if there is a segment *after* 'src'
       if (assetsIndex + 2 < parts.length) {
-         // Check if the next part is not the filename itself (meaning it's a directory)
-         if (assetsIndex + 3 < parts.length) {
-            const featureName = parts[assetsIndex + 2];
-            this.log(`#determineFeatureContext: Found 'assets/src' pattern. Feature context: "${featureName}"`);
-            return featureName;
-         } else {
-             // File is directly inside /assets/src/ (e.g., assets/src/main.js)
-             this.log(`#determineFeatureContext: File directly within 'assets/src'. Assigning 'core'.`);
-             return 'core'; // Assign 'core' for files directly in assets/src
-         }
+        // Check if the next part is not the filename itself (meaning it's a directory)
+        if (assetsIndex + 3 < parts.length) {
+          const featureName = parts[assetsIndex + 2];
+          this.log(`#determineFeatureContext: Found 'assets/src' pattern. Feature context: \"${featureName}\"`);
+          return featureName;
+        } else {
+          // File is directly inside /assets/src/ (e.g., assets/src/main.js)
+          this.log(`#determineFeatureContext: File directly within 'assets/src'. Assigning 'core'.`);
+          return 'core'; // Assign 'core' for files directly in assets/src
+        }
       } else {
-          // Edge case: path ends with /assets/src/
-          this.log(`#determineFeatureContext: Path ends with 'assets/src'. Assigning 'core'.`);
-          return 'core';
+        // Edge case: path ends with /assets/src/
+        this.log(`#determineFeatureContext: Path ends with 'assets/src'. Assigning 'core'.`);
+        return 'core';
       }
     }
 
     // If neither pattern matched
     this.log(`#determineFeatureContext: No feature pattern matched for path "${normalizedPath}". No feature context.`);
     return "";
+  }
+
+  /**
+   * Splits the input document text into chunks based on the strategy determined during construction.
+   * @param {string} documentText - The text content of the document to split.
+   * @returns {Promise<ChunkWithMetadata[] | string[]>} - An array of chunk strings or ChunkWithMetadata objects.
+   */
+  async splitText(documentText) {
+    this.log(`splitText: Starting split process with strategy: ${this.#chunkingStrategy}`);
+    
+    if (this.#chunkingStrategy.startsWith('ast-')) {
+      const language = this.#chunkingStrategy.split('-')[1]; // 'js', 'php', or 'css'
+      try {
+        // #splitTextWithAST now returns Promise<ChunkWithMetadata[]>
+        const chunksWithMetadata = await this.#splitTextWithAST(documentText, language);
+        this.log(`splitText: AST splitting for ${language} completed. Got ${chunksWithMetadata.length} chunks.`);
+        return chunksWithMetadata; // Return the array of { text, metadata } objects
+      } catch (error) {
+        this.log(`\x1b[31m[ERROR]\x1b[0m splitText: AST splitting failed for ${language}. Falling back to recursive. Error: ${error.message}`);
+        // Fallback to recursive if AST fails catastrophically (should be handled internally too, but belt-and-suspenders)
+        const recursiveSplitter = this.#getRecursiveSplitter();
+        const textChunks = await recursiveSplitter.splitText(documentText);
+         // Wrap into ChunkWithMetadata for consistency? Or let Lance handle string[]?
+         // For now, let's wrap it to match the expected output type potentially.
+         return textChunks.map(chunk => ({
+           text: chunk,
+           metadata: { 
+             sourceType: 'recursive-fallback', 
+             featureContext: this.#featureContext || "",
+             filePath: this.config.filename || "" 
+           }
+         }));
+      }
+    } else {
+      // Default to recursive splitting
+      this.log(`splitText: Using recursive splitting strategy.`);
+      const recursiveSplitter = this.#getRecursiveSplitter();
+      const textChunks = await recursiveSplitter.splitText(documentText);
+       this.log(`splitText: Recursive splitting completed. Got ${textChunks.length} chunks.`);
+       // Wrap into ChunkWithMetadata for consistency
+       const header = this.stringifyHeader();
+       return textChunks
+         .filter(chunk => !!chunk.trim())
+         .map(chunk => ({
+           text: header ? `${header}${chunk}` : chunk, // Prepend header if exists
+           metadata: { 
+             sourceType: 'recursive', 
+             featureContext: this.#featureContext || "",
+             filePath: this.config.filename || "" 
+            }
+         }));
+    }
   }
 }
 
