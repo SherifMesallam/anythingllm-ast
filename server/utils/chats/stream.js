@@ -220,7 +220,11 @@ async function streamChatWithWorkspace(
     return;
   }
 
-  // --- BEGIN LOGGING AROUND compressMessages ---
+  // --- BEGIN ADDED LOGGING ---
+  console.log("--- CHECKPOINT: Just before compressMessages call in stream.js ---");
+  // --- END ADDED LOGGING ---
+
+  // Compress & Assemble message to ensure prompt passes token limit with room for response
   let messages;
   try {
     console.log("  [DEBUG] stream.js: About to call LLMConnector.compressMessages...");
@@ -263,7 +267,6 @@ async function streamChatWithWorkspace(
     });
     return; // Exit the function if compression fails
   }
-  // --- END LOGGING AROUND compressMessages ---
 
   // --- BEGIN LOGGING BEFORE LLM CALL --- // Now safe to access messages.length
   console.log(`\x1b[36m[DEBUG] stream.js: Preparing to call AiProvider.streamGetChatCompletion for workspace ${workspace.slug} [0m`);

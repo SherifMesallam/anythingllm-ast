@@ -47,6 +47,17 @@ There is a supplemental version of this function that also returns a formatted s
 */
 
 async function messageArrayCompressor(llm, messages = [], rawHistory = []) {
+  // Wrap initial logging in try/catch
+  try {
+    // --- BEGIN SIMPLIFIED LOGGING ---
+    console.log("\x1b[36m[DEBUG] messageArrayCompressor: Entered function.\x1b[0m");
+    console.log(`\x1b[36m[DEBUG] messageArrayCompressor: LLM provider class: ${llm?.constructor?.name}\x1b[0m`);
+    console.log(`\x1b[36m[DEBUG] messageArrayCompressor: Received ${messages?.length ?? '??'} messages initially.\x1b[0m`);
+    // --- END SIMPLIFIED LOGGING ---
+  } catch (logError) {
+    console.error("\x1b[31m[ERROR] messageArrayCompressor: Failed during initial logging!\x1b[0m", logError);
+  }
+
   // assume the response will be at least 600 tokens. If the total prompt + reply is over we need to proactively
   // run the compressor to ensure the prompt has enough space to reply.
   // realistically - most users will not be impacted by this.
@@ -78,44 +89,87 @@ async function messageArrayCompressor(llm, messages = [], rawHistory = []) {
   }
 
   const compressedSystem = new Promise(async (resolve) => {
-    const count = tokenManager.countFromString(system.content);
-    if (count < llm.limits.system) {
+    const systemTokenCount = tokenManager.countFromString(system.content);
+    const systemLimit = llm.limits.system; // Get the budget
+
+    // --- BEGIN DETAILED BUDGET LOGGING ---
+    console.log(`[messageArrayCompressor] System Limit Budget: ${systemLimit} tokens.`);
+    console.log(`[messageArrayCompressor] Original System Token Count: ${systemTokenCount} tokens.`);
+    // --- END DETAILED BUDGET LOGGING ---
+
+    // If the whole system message fits, we are done.
+    if (systemTokenCount < systemLimit) {
       resolve(system);
       return;
     }
 
-    // Split context from system prompt - cannonball since its over the window.
-    // We assume the context + user prompt is enough tokens to fit.
-    const [prompt, context = ""] = system.content.split("Context:");
-    let compressedPrompt;
-    let compressedContext;
+    // If it doesn't fit, we need to compress, prioritizing the base prompt.
+    const contextSeparator = "\n\nContext:\n"; // Use the separator used in constructPrompt
+    const separatorIndex = system.content.indexOf(contextSeparator);
+    let basePrompt = system.content;
+    let contextPart = "";
 
-    // If the user system prompt contribution's to the system prompt is more than
-    // 25% of the system limit, we will cannonball it - this favors the context
-    // over the instruction from the user.
-    if (tokenManager.countFromString(prompt) >= llm.limits.system * 0.25) {
-      compressedPrompt = cannonball({
-        input: prompt,
-        targetTokenSize: llm.limits.system * 0.25,
-        tiktokenInstance: tokenManager,
-      });
+    if (separatorIndex !== -1) {
+      basePrompt = system.content.substring(0, separatorIndex);
+      contextPart = system.content.substring(separatorIndex + contextSeparator.length);
     } else {
-      compressedPrompt = prompt;
+      // No context separator found, the entire message is treated as the base prompt.
+      console.warn("[messageArrayCompressor] System message exceeds limit but no 'Context:' separator found. Compressing entire system message.");
     }
 
-    if (tokenManager.countFromString(context) >= llm.limits.system * 0.75) {
-      compressedContext = cannonball({
-        input: context,
-        targetTokenSize: llm.limits.system * 0.75,
+    const basePromptTokenCount = tokenManager.countFromString(basePrompt);
+    let compressedBasePrompt = basePrompt;
+    let compressedContextPart = contextPart;
+    let finalContextTokenCount = tokenManager.countFromString(contextPart); // Initialize
+
+    // --- BEGIN DETAILED BUDGET LOGGING ---
+    console.log(`[messageArrayCompressor] Base Prompt Token Count: ${basePromptTokenCount} tokens.`);
+    console.log(`[messageArrayCompressor] Original Context Part Token Count: ${finalContextTokenCount} tokens.`);
+    // --- END DETAILED BUDGET LOGGING ---
+
+    // Check if the base prompt *alone* exceeds the total system limit
+    if (basePromptTokenCount >= systemLimit) {
+      console.warn(`[messageArrayCompressor] Base system prompt (${basePromptTokenCount} tokens) exceeds total system limit (${systemLimit}). Compressing base prompt.`);
+      compressedBasePrompt = cannonball({
+        input: basePrompt,
+        // Compress drastically to fit within the limit, leaving minimal space for context if possible
+        targetTokenSize: Math.max(0, systemLimit - 50), // Leave ~50 tokens buffer
         tiktokenInstance: tokenManager,
       });
+      // If base prompt was compressed, there's no budget left for context
+      compressedContextPart = "";
+      finalContextTokenCount = 0;
     } else {
-      compressedContext = context;
+      // Base prompt fits. Calculate remaining budget for context.
+      const remainingContextBudget = systemLimit - basePromptTokenCount;
+      const contextPartTokenCount = tokenManager.countFromString(contextPart);
+
+      // --- BEGIN DETAILED BUDGET LOGGING ---
+      console.log(`[messageArrayCompressor] Remaining Budget for Context: ${remainingContextBudget} tokens.`);
+      // --- END DETAILED BUDGET LOGGING ---
+
+      if (contextPartTokenCount > remainingContextBudget) {
+        console.log(`[messageArrayCompressor] Compressing context part (${contextPartTokenCount} tokens) to fit remaining budget (${remainingContextBudget} tokens).`);
+        compressedContextPart = cannonball({
+          input: contextPart,
+          targetTokenSize: Math.max(0, remainingContextBudget), // Compress context to fit
+          tiktokenInstance: tokenManager,
+        });
+        finalContextTokenCount = tokenManager.countFromString(compressedContextPart);
+        console.log(`[messageArrayCompressor] Context Part AFTER compression: ${finalContextTokenCount} tokens.`);
+      } else {
+        // Context part fits within remaining budget, keep it as is.
+        compressedContextPart = contextPart;
+        // finalContextTokenCount remains unchanged
+      }
     }
 
-    system.content = `${compressedPrompt}${
-      compressedContext ? `\nContext: ${compressedContext}` : ""
-    }`;
+    // Reconstruct the message
+    system.content = compressedBasePrompt;
+    if (compressedContextPart) {
+      system.content += contextSeparator + compressedContextPart; // Re-add the separator
+    }
+
     resolve(system);
   });
 

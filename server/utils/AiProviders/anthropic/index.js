@@ -80,16 +80,193 @@ class AnthropicLLM {
     return content.flat();
   }
 
+  // Modified #appendContext to accept userPrompt and conditionally include metadata
+  #appendContext(contextDocuments = [], userPrompt = "") {
+    if (!contextDocuments || !contextDocuments.length) return "";
+
+    const includeMetadata = !userPrompt.includes('[nometa]');
+    this.log(`#appendContext: Metadata inclusion flag '[nometa]' ${includeMetadata ? 'not found' : 'found'}. Including metadata: ${includeMetadata}`);
+
+    // Start with the main context heading
+    let fullContextString = "\nContext:\n";
+
+    if (includeMetadata) {
+      // --- BEGIN METADATA-RICH FORMATTING ---
+      fullContextString += contextDocuments
+        .map((doc, i) => {
+          const text = doc.text || doc.pageContent || ""; // Get the text content
+          const metadata = doc.metadata || doc; // Metadata might be top-level or nested
+  
+          // --- Extract Existing and New Metadata --- 
+          const relevantMeta = {
+            file: metadata.filePath || metadata.title || metadata.filename || metadata.source || 'Unknown',
+            type: metadata.nodeType || (text.length > 0 ? 'Text' : 'Metadata'),
+            name: metadata.nodeName || null,
+            lines: (metadata.startLine && metadata.endLine) ? `${metadata.startLine}-${metadata.endLine}` : null,
+            parent: metadata.parentName || null,
+            score: metadata.score?.toFixed(4) || null,
+            language: metadata.language || null,
+            featureContext: metadata.featureContext || null,
+            summary: metadata.summary || null,
+            parameters: metadata.parameters || null,
+            returnType: metadata.returnType || null,
+            returnDescription: metadata.returnDescription || null,
+            visibility: metadata.modifiers?.visibility || null,
+            isDeprecated: metadata.isDeprecated || false,
+            isStatic: metadata.modifiers?.isStatic || false,
+            isAbstract: metadata.modifiers?.isAbstract || false,
+            isFinal: metadata.modifiers?.isFinal || false,
+            isAsync: metadata.modifiers?.isAsync || false,
+            registersHooks: metadata.registersHooks || null,
+            triggersHooks: metadata.triggersHooks || null,
+            selector: metadata.selector || null,
+            atRuleName: metadata.atRuleName || null,
+            atRuleParams: metadata.atRuleParams || null,
+            // Add PHP/other specific fields if needed based on TextSplitter capabilities
+            extendsClass: metadata.extendsClass || null, 
+            implementsInterfaces: metadata.implementsInterfaces || null, 
+            usesTraits: metadata.usesTraits || null, 
+          };
+          // --- End Metadata Extraction ---
+          
+          // -- Safely parse JSON string fields --
+          let parsedParameters = [];
+          let parsedModifiers = {};
+          let parsedImplementsInterfaces = [];
+          let parsedUsesTraits = [];
+          let parsedRegistersHooks = [];
+          let parsedTriggersHooks = [];
+  
+          try { parsedParameters = relevantMeta.parameters ? JSON.parse(relevantMeta.parameters) : []; } catch (e) { console.error(`[Anthropic Context] Failed to parse parameters: ${relevantMeta.parameters}`, e); }
+          try { parsedModifiers = relevantMeta.modifiers ? JSON.parse(relevantMeta.modifiers) : {}; } catch (e) { console.error(`[Anthropic Context] Failed to parse modifiers: ${relevantMeta.modifiers}`, e); }
+          try { parsedImplementsInterfaces = relevantMeta.implementsInterfaces ? JSON.parse(relevantMeta.implementsInterfaces) : []; } catch (e) { console.error(`[Anthropic Context] Failed to parse implementsInterfaces: ${relevantMeta.implementsInterfaces}`, e); }
+          try { parsedUsesTraits = relevantMeta.usesTraits ? JSON.parse(relevantMeta.usesTraits) : []; } catch (e) { console.error(`[Anthropic Context] Failed to parse usesTraits: ${relevantMeta.usesTraits}`, e); }
+          try { parsedRegistersHooks = relevantMeta.registersHooks ? JSON.parse(relevantMeta.registersHooks) : []; } catch (e) { console.error(`[Anthropic Context] Failed to parse registersHooks: ${relevantMeta.registersHooks}`, e); }
+          try { parsedTriggersHooks = relevantMeta.triggersHooks ? JSON.parse(relevantMeta.triggersHooks) : []; } catch (e) { console.error(`[Anthropic Context] Failed to parse triggersHooks: ${relevantMeta.triggersHooks}`, e); }
+          // -- End Parsing --
+  
+          // --- Build the formatted string for this chunk ---
+          let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
+          formattedChunk += `Source File: ${relevantMeta.file}\n`;
+          if (relevantMeta.language) formattedChunk += `Language: ${relevantMeta.language}\n`;
+          if (relevantMeta.featureContext) formattedChunk += `Feature Context: ${relevantMeta.featureContext}\n`;
+          if (relevantMeta.type) formattedChunk += `Element Type: ${relevantMeta.type}\n`;
+  
+          // Specific CSS Formatting
+          if (relevantMeta.language === 'css') {
+              if (relevantMeta.type === 'rule' && relevantMeta.selector) {
+                   formattedChunk += `CSS Selector: ${relevantMeta.selector}\n`;
+              } else if (relevantMeta.type === 'atRule' && relevantMeta.atRuleName) {
+                   const paramsStr = relevantMeta.atRuleParams ? ` ${relevantMeta.atRuleParams}` : '';
+                   formattedChunk += `CSS At-Rule: @${relevantMeta.atRuleName}${paramsStr}\n`;
+              }
+          } 
+          // Generic/Other Language Formatting
+          else {
+              if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
+              if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
+              if (parsedModifiers.visibility) formattedChunk += `Visibility: ${parsedModifiers.visibility}\n`;
+          }
+          
+          if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
+  
+          // --- Resume formatting for fields common to all or already handled ----
+          const modifierFlags = [];
+          if (parsedModifiers.isStatic) modifierFlags.push('static');
+          if (parsedModifiers.isAbstract) modifierFlags.push('abstract');
+          if (parsedModifiers.isFinal) modifierFlags.push('final');
+          if (parsedModifiers.isAsync) modifierFlags.push('async'); 
+          if (modifierFlags.length > 0 && relevantMeta.language !== 'css') formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`;
+  
+          if (relevantMeta.isDeprecated && relevantMeta.language !== 'css') formattedChunk += `Deprecated: Yes\n`;
+  
+          if (relevantMeta.summary && relevantMeta.language !== 'css') formattedChunk += `Summary: ${relevantMeta.summary}\n`;
+  
+          if (parsedParameters && parsedParameters.length > 0 && relevantMeta.language !== 'css') {
+             formattedChunk += `Parameters:\n`;
+             parsedParameters.forEach(p => {
+                 const typeStr = p.type ? `: ${p.type}` : '';
+                 const descStr = p.description ? ` - ${p.description}` : '';
+                 formattedChunk += `  - ${p.name}${typeStr}${descStr}\n`;
+             });
+          } 
+  
+          if (relevantMeta.returnType && relevantMeta.language !== 'css') {
+              const descStr = relevantMeta.returnDescription ? ` - ${relevantMeta.returnDescription}` : '';
+              formattedChunk += `Returns: ${relevantMeta.returnType}${descStr}\n`;
+          } 
+  
+           if (parsedRegistersHooks && parsedRegistersHooks.length > 0 && relevantMeta.language === 'php') {
+             formattedChunk += `Registers Hooks:\n`;
+             parsedRegistersHooks.forEach(h => {
+                 formattedChunk += `  - [${h.type}] ${h.hookName} -> ${h.callback} (P:${h.priority}, A:${h.acceptedArgs})\n`;
+             });
+          } 
+  
+          if (parsedTriggersHooks && parsedTriggersHooks.length > 0 && relevantMeta.language === 'php') {
+              formattedChunk += `Triggers Hooks:\n`;
+              parsedTriggersHooks.forEach(h => {
+                  formattedChunk += `  - [${h.type}] ${h.hookName}\n`;
+              });
+          } 
+  
+          if (relevantMeta.extendsClass && relevantMeta.language === 'php') {
+              formattedChunk += `Extends: ${relevantMeta.extendsClass}\n`;
+          }
+          if (parsedImplementsInterfaces && parsedImplementsInterfaces.length > 0 && relevantMeta.language === 'php') {
+              formattedChunk += `Implements: ${parsedImplementsInterfaces.join(', ')}\n`;
+          }
+          if (parsedUsesTraits && parsedUsesTraits.length > 0 && relevantMeta.language === 'php') {
+              formattedChunk += `Uses Traits: ${parsedUsesTraits.join(', ')}\n`;
+          }
+  
+          if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
+          
+          const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
+          
+          formattedChunk += `--- Code/Text ---\n${cleanedText}\n`;
+          formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`; 
+  
+          return formattedChunk;
+        })
+        .join("");
+      // --- END METADATA-RICH FORMATTING ---
+    } else {
+      // --- BEGIN SIMPLE FORMATTING ([nometa] detected) ---
+      fullContextString += contextDocuments
+        .map((doc, i) => {
+          const text = doc.text || doc.pageContent || ""; // Get the text content only
+          const metadata = doc.metadata || doc;
+          const sourceFile = metadata.filePath || metadata.title || metadata.filename || metadata.source || 'Unknown';
+          const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
+          return `--- Context Chunk ${i + 1} ---\nSource File: ${sourceFile}\n--- Code/Text ---\n${cleanedText}\n--- End Context Chunk ${i + 1} ---\n\n`;
+        })
+        .join("");
+      // --- END SIMPLE FORMATTING ---
+    }
+
+    this.log("#appendContext: Generated formatted context string."); // Simplified log message
+    return fullContextString;
+  }
+
   constructPrompt({
     systemPrompt = "",
-    contextTexts = [],
+    contextDocuments = [],
     chatHistory = [],
     userPrompt = "",
     attachments = [], // This is the specific attachment for only this prompt
   }) {
+    // Pass userPrompt to #appendContext
+    const formattedContext = this.#appendContext(contextDocuments, userPrompt);
+
+    // Check and remove the flag from the userPrompt before using it
+    const finalUserPrompt = userPrompt.includes('[nometa]') 
+                             ? userPrompt.replace('[nometa]', '').trim() 
+                             : userPrompt;
+
     const prompt = {
       role: "system",
-      content: `${systemPrompt}${this.#appendContext(contextTexts)}`,
+      content: `${systemPrompt}${formattedContext}`,
     };
 
     return [
@@ -97,7 +274,8 @@ class AnthropicLLM {
       ...formatChatHistory(chatHistory, this.#generateContent),
       {
         role: "user",
-        content: this.#generateContent({ userPrompt, attachments }),
+        // Use the potentially modified finalUserPrompt
+        content: this.#generateContent({ userPrompt: finalUserPrompt, attachments }),
       },
     ];
   }
@@ -240,18 +418,6 @@ class AnthropicLLM {
         }
       });
     });
-  }
-
-  #appendContext(contextTexts = []) {
-    if (!contextTexts || !contextTexts.length) return "";
-    return (
-      "\nContext:\n" +
-      contextTexts
-        .map((text, i) => {
-          return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
-        })
-        .join("")
-    );
   }
 
   async compressMessages(promptArgs = {}, rawHistory = []) {

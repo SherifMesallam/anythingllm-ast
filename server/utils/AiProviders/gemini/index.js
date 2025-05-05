@@ -87,174 +87,172 @@ class GeminiLLM {
     return now - timestampMs > MAX_STALE;
   }
 
-  // Modified to accept contextDocuments (array of objects)
-  #appendContext(contextDocuments = []) {
+  // Modified #appendContext to accept userPrompt and conditionally include metadata
+  #appendContext(contextDocuments = [], userPrompt = "") {
     if (!contextDocuments || !contextDocuments.length) return "";
+
+    const includeMetadata = !userPrompt.includes('[nometa]');
+    this.#log(`#appendContext: Metadata inclusion flag '[nometa]' ${includeMetadata ? 'not found' : 'found'}. Including metadata: ${includeMetadata}`);
 
     // Start with the main context heading
     let fullContextString = "\nContext:\n";
 
-    // Map each document/chunk object to a formatted string with metadata
-    fullContextString += contextDocuments
-      .map((doc, i) => {
-        const text = doc.text || doc.pageContent || ""; // Get the text content
-        const metadata = doc.metadata || doc; // Metadata might be top-level or nested
-
-        // --- Extract Existing and New Metadata ---
-        const relevantMeta = {
-          // Existing Fields
-          file: metadata.filePath || metadata.title || metadata.filename || metadata.source || 'Unknown', // Use filePath from AST if available
-          type: metadata.nodeType || (text.length > 0 ? 'Text' : 'Metadata'), // Use nodeType from AST
-          name: metadata.nodeName || null, // Use nodeName from AST
-          lines: (metadata.startLine && metadata.endLine) ? `${metadata.startLine}-${metadata.endLine}` : null, // Use start/endLine from AST
-          parent: metadata.parentName || null, // Use parentName from AST
-          score: metadata.score?.toFixed(4) || null, // Include similarity score if available
-          language: metadata.language || null, // e.g., 'php', 'js'
+    if (includeMetadata) {
+      // --- BEGIN METADATA-RICH FORMATTING ---
+      fullContextString += contextDocuments
+        .map((doc, i) => {
+          const text = doc.text || doc.pageContent || ""; // Get the text content
+          const metadata = doc.metadata || doc; // Metadata might be top-level or nested
           
-          // Explicitly OMIT BigInt fields from context sent to LLM
-          // wordCount: metadata.wordCount, 
-          // token_count_estimate: metadata.token_count_estimate,
+          // --- Extract Existing and New Metadata --- 
+          const relevantMeta = {
+            file: metadata.filePath || metadata.title || metadata.filename || metadata.source || 'Unknown',
+            type: metadata.nodeType || (text.length > 0 ? 'Text' : 'Metadata'),
+            name: metadata.nodeName || null,
+            lines: (metadata.startLine && metadata.endLine) ? `${metadata.startLine}-${metadata.endLine}` : null,
+            parent: metadata.parentName || null,
+            score: metadata.score?.toFixed(4) || null,
+            language: metadata.language || null,
+            featureContext: metadata.featureContext || null,
+            summary: metadata.summary || null,
+            parameters: metadata.parameters || null,
+            returnType: metadata.returnType || null,
+            returnDescription: metadata.returnDescription || null,
+            visibility: metadata.modifiers?.visibility || null,
+            isDeprecated: metadata.isDeprecated || false,
+            isStatic: metadata.modifiers?.isStatic || false,
+            isAbstract: metadata.modifiers?.isAbstract || false,
+            isFinal: metadata.modifiers?.isFinal || false,
+            isAsync: metadata.modifiers?.isAsync || false,
+            registersHooks: metadata.registersHooks || null,
+            triggersHooks: metadata.triggersHooks || null,
+            selector: metadata.selector || null,
+            atRuleName: metadata.atRuleName || null,
+            atRuleParams: metadata.atRuleParams || null,
+            // Add PHP/other specific fields if needed based on TextSplitter capabilities
+            extendsClass: metadata.extendsClass || null, 
+            implementsInterfaces: metadata.implementsInterfaces || null, 
+            usesTraits: metadata.usesTraits || null, 
+          };
+          // --- End Metadata Extraction ---
+          
+          // -- Safely parse JSON string fields --
+          let parsedParameters = [];
+          let parsedModifiers = {};
+          let parsedImplementsInterfaces = [];
+          let parsedUsesTraits = [];
+          let parsedRegistersHooks = [];
+          let parsedTriggersHooks = [];
+  
+          try { parsedParameters = relevantMeta.parameters ? JSON.parse(relevantMeta.parameters) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse parameters: ${relevantMeta.parameters}`, e); }
+          try { parsedModifiers = relevantMeta.modifiers ? JSON.parse(relevantMeta.modifiers) : {}; } catch (e) { console.error(`[Gemini Context] Failed to parse modifiers: ${relevantMeta.modifiers}`, e); }
+          try { parsedImplementsInterfaces = relevantMeta.implementsInterfaces ? JSON.parse(relevantMeta.implementsInterfaces) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse implementsInterfaces: ${relevantMeta.implementsInterfaces}`, e); }
+          try { parsedUsesTraits = relevantMeta.usesTraits ? JSON.parse(relevantMeta.usesTraits) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse usesTraits: ${relevantMeta.usesTraits}`, e); }
+          try { parsedRegistersHooks = relevantMeta.registersHooks ? JSON.parse(relevantMeta.registersHooks) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse registersHooks: ${relevantMeta.registersHooks}`, e); }
+          try { parsedTriggersHooks = relevantMeta.triggersHooks ? JSON.parse(relevantMeta.triggersHooks) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse triggersHooks: ${relevantMeta.triggersHooks}`, e); }
+          // -- End Parsing --
+  
+          // --- Build the formatted string for this chunk ---
+          let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
+          formattedChunk += `Source File: ${relevantMeta.file}\n`;
+          if (relevantMeta.language) formattedChunk += `Language: ${relevantMeta.language}\n`;
+          if (relevantMeta.featureContext) formattedChunk += `Feature Context: ${relevantMeta.featureContext}\n`;
+          if (relevantMeta.type) formattedChunk += `Element Type: ${relevantMeta.type}\n`;
+  
+          // Specific CSS Formatting
+          if (relevantMeta.language === 'css') {
+              if (relevantMeta.type === 'rule' && relevantMeta.selector) {
+                   formattedChunk += `CSS Selector: ${relevantMeta.selector}\n`;
+              } else if (relevantMeta.type === 'atRule' && relevantMeta.atRuleName) {
+                   const paramsStr = relevantMeta.atRuleParams ? ` ${relevantMeta.atRuleParams}` : '';
+                   formattedChunk += `CSS At-Rule: @${relevantMeta.atRuleName}${paramsStr}\n`;
+              }
+          } 
+          // Generic/Other Language Formatting
+          else {
+              if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
+              if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
+              if (parsedModifiers.visibility) formattedChunk += `Visibility: ${parsedModifiers.visibility}\n`;
+          }
+          
+          if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
+  
+          // --- Resume formatting for fields common to all or already handled ----
+          const modifierFlags = [];
+          if (parsedModifiers.isStatic) modifierFlags.push('static');
+          if (parsedModifiers.isAbstract) modifierFlags.push('abstract');
+          if (parsedModifiers.isFinal) modifierFlags.push('final');
+          if (parsedModifiers.isAsync) modifierFlags.push('async'); 
+          if (modifierFlags.length > 0 && relevantMeta.language !== 'css') formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`;
+  
+          if (relevantMeta.isDeprecated && relevantMeta.language !== 'css') formattedChunk += `Deprecated: Yes\n`;
+  
+          if (relevantMeta.summary && relevantMeta.language !== 'css') formattedChunk += `Summary: ${relevantMeta.summary}\n`;
+  
+          if (parsedParameters && parsedParameters.length > 0 && relevantMeta.language !== 'css') {
+             formattedChunk += `Parameters:\n`;
+             parsedParameters.forEach(p => {
+                 const typeStr = p.type ? `: ${p.type}` : '';
+                 const descStr = p.description ? ` - ${p.description}` : '';
+                 formattedChunk += `  - ${p.name}${typeStr}${descStr}\n`;
+             });
+          } 
+  
+          if (relevantMeta.returnType && relevantMeta.language !== 'css') {
+              const descStr = relevantMeta.returnDescription ? ` - ${relevantMeta.returnDescription}` : '';
+              formattedChunk += `Returns: ${relevantMeta.returnType}${descStr}\n`;
+          } 
+  
+           if (parsedRegistersHooks && parsedRegistersHooks.length > 0 && relevantMeta.language === 'php') {
+             formattedChunk += `Registers Hooks:\n`;
+             parsedRegistersHooks.forEach(h => {
+                 formattedChunk += `  - [${h.type}] ${h.hookName} -> ${h.callback} (P:${h.priority}, A:${h.acceptedArgs})\n`;
+             });
+          } 
+  
+          if (parsedTriggersHooks && parsedTriggersHooks.length > 0 && relevantMeta.language === 'php') {
+              formattedChunk += `Triggers Hooks:\n`;
+              parsedTriggersHooks.forEach(h => {
+                  formattedChunk += `  - [${h.type}] ${h.hookName}\n`;
+              });
+          } 
+  
+          if (relevantMeta.extendsClass && relevantMeta.language === 'php') {
+              formattedChunk += `Extends: ${relevantMeta.extendsClass}\n`;
+          }
+          if (parsedImplementsInterfaces && parsedImplementsInterfaces.length > 0 && relevantMeta.language === 'php') {
+              formattedChunk += `Implements: ${parsedImplementsInterfaces.join(', ')}\n`;
+          }
+          if (parsedUsesTraits && parsedUsesTraits.length > 0 && relevantMeta.language === 'php') {
+              formattedChunk += `Uses Traits: ${parsedUsesTraits.join(', ')}\n`;
+          }
+  
+          if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
+          
+          const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
+          
+          formattedChunk += `--- Code/Text ---\n${cleanedText}\n`;
+          formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`; 
+  
+          return formattedChunk;
+        })
+        .join("");
+      // --- END METADATA-RICH FORMATTING ---
+    } else {
+      // --- BEGIN SIMPLE FORMATTING ([nometa] detected) ---
+      fullContextString += contextDocuments
+        .map((doc, i) => {
+          const text = doc.text || doc.pageContent || ""; // Get the text content only
+          const metadata = doc.metadata || doc;
+          const sourceFile = metadata.filePath || metadata.title || metadata.filename || metadata.source || 'Unknown';
+          const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
+          return `--- Context Chunk ${i + 1} ---\nSource File: ${sourceFile}\n--- Code/Text ---\n${cleanedText}\n--- End Context Chunk ${i + 1} ---\n\n`;
+        })
+        .join("");
+      // --- END SIMPLE FORMATTING ---
+    }
 
-          // New Phase 1 Fields
-          featureContext: metadata.featureContext || null, // From path analysis
-          summary: metadata.summary || null, // From DocBlock
-          parameters: metadata.parameters || null, // Keep original string here for now
-          returnType: metadata.returnType || null, // From DocBlock/Signature
-          returnDescription: metadata.returnDescription || null, // From DocBlock @return
-          visibility: metadata.modifiers?.visibility || null, // From AST Modifiers
-          isDeprecated: metadata.isDeprecated || false, // From DocBlock @deprecated
-          isStatic: metadata.modifiers?.isStatic || false, // From AST Modifiers
-          isAbstract: metadata.modifiers?.isAbstract || false, // From AST Modifiers
-          isFinal: metadata.modifiers?.isFinal || false, // From AST Modifiers
-          isAsync: metadata.modifiers?.isAsync || false, // <-- Add isAsync extraction (primarily for JS)
-          registersHooks: metadata.registersHooks || null, // Array from WP Hook analysis [{hookName, callback, type, priority, acceptedArgs}]
-          triggersHooks: metadata.triggersHooks || null, // Array from WP Hook analysis [{hookName, type}]
-
-          // New CSS Fields
-          selector: metadata.selector || null,       // From CSS AST
-          atRuleName: metadata.atRuleName || null,   // From CSS AST
-          atRuleParams: metadata.atRuleParams || null, // From CSS AST
-
-          // Add other potentially useful fields from existing metadata if needed
-        };
-        // --- End Metadata Extraction ---
-        
-        // -- Safely parse JSON string fields from relevantMeta before use --
-        let parsedParameters = [];
-        let parsedModifiers = {};
-        let parsedImplementsInterfaces = [];
-        let parsedUsesTraits = [];
-        let parsedRegistersHooks = [];
-        let parsedTriggersHooks = [];
-
-        try { parsedParameters = relevantMeta.parameters ? JSON.parse(relevantMeta.parameters) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse parameters: ${relevantMeta.parameters}`, e); }
-        try { parsedModifiers = relevantMeta.modifiers ? JSON.parse(relevantMeta.modifiers) : {}; } catch (e) { console.error(`[Gemini Context] Failed to parse modifiers: ${relevantMeta.modifiers}`, e); }
-        try { parsedImplementsInterfaces = relevantMeta.implementsInterfaces ? JSON.parse(relevantMeta.implementsInterfaces) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse implementsInterfaces: ${relevantMeta.implementsInterfaces}`, e); }
-        try { parsedUsesTraits = relevantMeta.usesTraits ? JSON.parse(relevantMeta.usesTraits) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse usesTraits: ${relevantMeta.usesTraits}`, e); }
-        try { parsedRegistersHooks = relevantMeta.registersHooks ? JSON.parse(relevantMeta.registersHooks) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse registersHooks: ${relevantMeta.registersHooks}`, e); }
-        try { parsedTriggersHooks = relevantMeta.triggersHooks ? JSON.parse(relevantMeta.triggersHooks) : []; } catch (e) { console.error(`[Gemini Context] Failed to parse triggersHooks: ${relevantMeta.triggersHooks}`, e); }
-        // -- End Parsing --
-
-        // --- Build the formatted string for this chunk ---
-        let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
-        formattedChunk += `Source File: ${relevantMeta.file}\n`;
-        if (relevantMeta.language) formattedChunk += `Language: ${relevantMeta.language}\n`;
-        if (relevantMeta.featureContext) formattedChunk += `Feature Context: ${relevantMeta.featureContext}\n`;
-        if (relevantMeta.type) formattedChunk += `Element Type: ${relevantMeta.type}\n`;
-
-        // Specific CSS Formatting
-        if (relevantMeta.language === 'css') {
-            if (relevantMeta.type === 'rule' && relevantMeta.selector) {
-                 formattedChunk += `CSS Selector: ${relevantMeta.selector}\n`;
-            } else if (relevantMeta.type === 'atRule' && relevantMeta.atRuleName) {
-                 const paramsStr = relevantMeta.atRuleParams ? ` ${relevantMeta.atRuleParams}` : '';
-                 formattedChunk += `CSS At-Rule: @${relevantMeta.atRuleName}${paramsStr}\n`;
-            }
-        } 
-        // Generic/Other Language Formatting
-        else {
-            if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
-            if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
-            if (parsedModifiers.visibility) formattedChunk += `Visibility: ${parsedModifiers.visibility}\n`;
-            // ... (other modifier flags, deprecated, summary, parameters, return, hooks formatting needs placing)
-        }
-        
-        if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
-
-        // --- Resume formatting for fields common to all or already handled ----
-        // Add modifier flags if true (mostly for PHP/JS)
-        const modifierFlags = [];
-        if (parsedModifiers.isStatic) modifierFlags.push('static');
-        if (parsedModifiers.isAbstract) modifierFlags.push('abstract');
-        if (parsedModifiers.isFinal) modifierFlags.push('final');
-        if (parsedModifiers.isAsync) modifierFlags.push('async'); 
-        if (modifierFlags.length > 0 && relevantMeta.language !== 'css') formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`; // Avoid showing for CSS
-
-        if (relevantMeta.isDeprecated && relevantMeta.language !== 'css') formattedChunk += `Deprecated: Yes\n`; // Avoid showing for CSS
-
-        // Add Summary if available (mostly PHP/JS)
-        if (relevantMeta.summary && relevantMeta.language !== 'css') formattedChunk += `Summary: ${relevantMeta.summary}\n`;
-
-        // Format Parameters (if any - mostly PHP/JS)
-        if (parsedParameters && parsedParameters.length > 0 && relevantMeta.language !== 'css') {
-           formattedChunk += `Parameters:\n`;
-           parsedParameters.forEach(p => {
-               const typeStr = p.type ? `: ${p.type}` : '';
-               const descStr = p.description ? ` - ${p.description}` : '';
-               formattedChunk += `  - ${p.name}${typeStr}${descStr}\n`;
-           });
-        } 
-
-        // Format Return Info (mostly PHP/JS)
-        if (relevantMeta.returnType && relevantMeta.language !== 'css') {
-            const descStr = relevantMeta.returnDescription ? ` - ${relevantMeta.returnDescription}` : '';
-            formattedChunk += `Returns: ${relevantMeta.returnType}${descStr}\n`;
-        } 
-
-         // Format Registered Hooks (PHP Only)
-        if (parsedRegistersHooks && parsedRegistersHooks.length > 0 && relevantMeta.language === 'php') {
-           formattedChunk += `Registers Hooks:\n`;
-           parsedRegistersHooks.forEach(h => {
-               formattedChunk += `  - [${h.type}] ${h.hookName} -> ${h.callback} (P:${h.priority}, A:${h.acceptedArgs})\n`;
-           });
-        } 
-
-        // Format Triggered Hooks (PHP Only)
-        if (parsedTriggersHooks && parsedTriggersHooks.length > 0 && relevantMeta.language === 'php') {
-            formattedChunk += `Triggers Hooks:\n`;
-            parsedTriggersHooks.forEach(h => {
-                formattedChunk += `  - [${h.type}] ${h.hookName}\n`;
-            });
-        } 
-
-        // Add Extends/Implements/Uses (PHP specific)
-        if (relevantMeta.extendsClass && relevantMeta.language === 'php') {
-            formattedChunk += `Extends: ${relevantMeta.extendsClass}\n`;
-        }
-        if (parsedImplementsInterfaces && parsedImplementsInterfaces.length > 0 && relevantMeta.language === 'php') {
-            formattedChunk += `Implements: ${parsedImplementsInterfaces.join(', ')}\n`;
-        }
-        if (parsedUsesTraits && parsedUsesTraits.length > 0 && relevantMeta.language === 'php') {
-            formattedChunk += `Uses Traits: ${parsedUsesTraits.join(', ')}\n`;
-        }
-
-        if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
-        
-        // --- Clean the text content --- 
-        const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
-        // --- End text cleaning ---
-        
-        formattedChunk += `--- Code/Text ---\n${cleanedText}\n`; // <-- Use cleanedText 
-        formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`; 
-
-        return formattedChunk;
-      })
-      .join("");
-
-    // --- BEGIN MODIFIED LOGGING ---
-    // Log the FULL context string (use with caution for very large contexts)
-    console.log("\x1b[36m[DEBUG] GeminiLLM:#appendContext: Generated formatted context string:\x1b[0m\n", fullContextString);
-    // --- END MODIFIED LOGGING ---
+    this.#log("#appendContext: Generated formatted context string."); // Simplified log message
     return fullContextString;
   }
 
@@ -502,21 +500,22 @@ class GeminiLLM {
     contextDocuments = [],
     chatHistory = [],
     userPrompt = "",
-    attachments = [], 
+    attachments = [], // This is the specific attachment for only this prompt
   }) {
-    let finalMessages = [];
-    const formattedContext = this.#appendContext(contextDocuments);
+    this.#log("Constructing prompt for Gemini...");
+    let _systemPrompt = systemPrompt;
 
-    // --- Log input parts for debugging ---
-    console.log(`  [DEBUG] constructPrompt: Received System Prompt: ${!!systemPrompt}`);
-    console.log(`  [DEBUG] constructPrompt: Received Context Docs Count: ${contextDocuments?.length || 0}`);
-    // --- BEGIN MODIFIED LOGGING ---
-    // Log the FULL context string (use with caution for very large contexts)
-    console.log(`  [DEBUG] constructPrompt: Received Formatted Context String:\n ${formattedContext}`);
-    // --- END MODIFIED LOGGING ---
-    console.log(`  [DEBUG] constructPrompt: Received Chat History Count: ${chatHistory?.length || 0}`);
-    console.log(`  [DEBUG] constructPrompt: Received User Prompt: ${!!userPrompt}`);
-    // --- End Log ---
+    // Pass userPrompt to #appendContext
+    const formattedContext = this.#appendContext(contextDocuments, userPrompt);
+
+    // Check and remove the flag from the userPrompt before using it
+    const finalUserPrompt = userPrompt.includes('[nometa]') 
+                             ? userPrompt.replace('[nometa]', '').trim() 
+                             : userPrompt;
+
+    // Gemini is fussier than OpenAI and does not allow for a top-level system prompt
+    // so we mimic one appropriately based on the chat history length.
+    let finalMessages = [];
 
     // 1. Add Initial System Prompt (if it exists)
     if (this.supportsSystemPrompt) {
@@ -542,17 +541,17 @@ class GeminiLLM {
     ); 
 
     // 4. Add Current User Prompt (if it exists)
-    if (userPrompt) {
+    if (finalUserPrompt) {
         // Use helper to format attachments for the current prompt
         finalMessages.push({ 
           role: "user", 
-          content: this.#generateContent({ userPrompt, attachments }) 
+          content: this.#generateContent({ userPrompt: finalUserPrompt, attachments }) 
         }); 
     } else {
         console.error("[ERROR] constructPrompt: User prompt was empty or not provided!");
     }
 
-    console.log(`  [DEBUG] constructPrompt: Returning ${finalMessages.length} final messages.`);
+    this.#log(`constructPrompt: Returning ${finalMessages.length} final messages.`);
     return finalMessages;
   }
 
