@@ -14,6 +14,37 @@ const {
   writeResponseChunk,
 } = require("../../../utils/helpers/chat/responses");
 const { ApiChatHandler } = require("../../../utils/chats/apiChatHandler");
+const { safeJsonParse } = require("../../utils/http");
+
+// Helper function to recursively convert BigInts to strings
+function sanitizeBigInts(obj) {
+  if (obj === null || typeof obj !== 'object') {
+    return obj;
+  }
+
+  if (typeof obj === 'bigint') {
+    return obj.toString();
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizeBigInts);
+  }
+
+  const newObj = {};
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      const value = obj[key];
+      if (typeof value === 'bigint') {
+        newObj[key] = value.toString();
+      } else if (typeof value === 'object') {
+        newObj[key] = sanitizeBigInts(value);
+      } else {
+        newObj[key] = value;
+      }
+    }
+  }
+  return newObj;
+}
 
 function apiWorkspaceEndpoints(app) {
   if (!app) return;
@@ -687,18 +718,12 @@ function apiWorkspaceEndpoints(app) {
           reset,
         });
 
-        await Telemetry.sendTelemetry("sent_chat", {
-          LLMSelection:
-            workspace.chatProvider ?? process.env.LLM_PROVIDER ?? "openai",
-          Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-          VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-          TTSSelection: process.env.TTS_PROVIDER || "native",
-        });
+
         await EventLogs.logEvent("api_sent_chat", {
           workspaceName: workspace?.name,
           chatModel: workspace?.chatModel || "System Default",
         });
-        return response.status(200).json({ ...result });
+        return response.status(200).json(sanitizeBigInts({ ...result }));
       } catch (e) {
         console.error(e.message, e);
         response.status(500).json({

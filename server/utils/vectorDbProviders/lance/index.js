@@ -87,7 +87,7 @@ const FULL_LANCEDB_SCHEMA = new arrow.Schema([
 const MINIMAL_LANCEDB_SCHEMA = new arrow.Schema([
     new arrow.Field("id", new arrow.Utf8(), false),
     new arrow.Field("vector", new arrow.FixedSizeList(embedderDimension, new arrow.Field("item", new arrow.Float32(), false)), false),
-    new arrow.Field("text", new arrow.Utf8(), false), 
+    new arrow.Field("text", new arrow.Utf8(), false),
 ]);
 // --- END MINIMAL SCHEMA FOR TESTING ---
 
@@ -363,7 +363,7 @@ const LanceDb = {
     console.log(`[DEBUG] LanceDB updateOrCreateCollection: Creating table for namespace '${namespace}' with ${data.length} records using FULL explicit schema.`);
     try {
       // Pass the FULL schema when creating the table again
-      await client.createTable(namespace, data, { schema: FULL_LANCEDB_SCHEMA, mode: 'create' }); 
+      await client.createTable(namespace, data, { schema: FULL_LANCEDB_SCHEMA, mode: 'create' });
       console.log(`[DEBUG] LanceDB updateOrCreateCollection: Table '${namespace}' created successfully with FULL explicit schema.`);
     } catch (createError) {
       console.error(`[ERROR] LanceDB: Failed to create table '${namespace}' with FULL explicit schema!`, createError);
@@ -541,14 +541,14 @@ const LanceDb = {
             // 3. Convert null/undefined for nullable Boolean fields to null (Arrow might handle null better than undefined)
             else if (expectedType === 'Bool' && fieldSchema.nullable && currentValue === undefined) {
                 console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Converting undefined Boolean field '${key}' to null.`);
-                combinedMetadata[key] = null; 
+                combinedMetadata[key] = null;
             }
              // 4. Convert null/undefined for nullable Int64 fields to null
             else if (expectedType.startsWith('Int') && fieldSchema.nullable && currentValue === undefined) {
                 console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Converting undefined Int field '${key}' to null.`);
-                combinedMetadata[key] = null; 
+                combinedMetadata[key] = null;
             }
-            
+
             // 5. Remove any remaining undefined fields (shouldn't happen with above conversions but good safety check)
             if (combinedMetadata[key] === undefined) {
                  console.log(`  [WARN] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Removing unexpected undefined field '${key}'.`);
@@ -575,9 +575,9 @@ const LanceDb = {
                 } else {
                   // Should not happen with our current schema, but log just in case
                   console.warn(`  [WARN] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Missing nullable field '${key}' with unhandled type ${fieldTypeStr}. Setting to null.`);
-                  defaultValue = null; 
+                  defaultValue = null;
                 }
-                
+
                 if (defaultValue !== undefined) { // Add default if we determined one
                   console.log(`  [DEBUG] LanceDB:addDocumentToNamespace - Chunk ${i + 1}: Adding missing nullable field '${key}' with default value: ${JSON.stringify(defaultValue)}`);
                   combinedMetadata[key] = defaultValue;
@@ -613,7 +613,7 @@ const LanceDb = {
             text: chunkText, // Use original, non-truncated text for storage
             ...otherMetadata, // Spread the rest of the combined metadata
           });
-          
+
           documentVectors.push({ docId, vectorId: vectorRecord.id });
         }
       } else {
@@ -759,15 +759,15 @@ const LanceDb = {
     // --- BEGIN ADDED LOGGING ---
     // This log should now show the full metadata if it was retrieved by LanceDB
     // Add replacer to handle BigInt for logging purposes
-    console.log(`  [DEBUG] LanceDB:performSimilaritySearch - Retrieved sources (metadata only):`, 
-      JSON.stringify(sources, (key, value) => typeof value === 'bigint' ? value.toString() : value, 2)
-    );
+    // console.log(`  [DEBUG] LanceDB:performSimilaritySearch - Retrieved sources (metadata only):`,
+    //   JSON.stringify(sources, (key, value) => typeof value === 'bigint' ? value.toString() : value, 2)
+    // );
     // --- END ADDED LOGGING ---
 
     return {
       contextTexts,
       // Pass the potentially richer `sources` to curateSources
-      sources: this.curateSources(sources), 
+      sources: this.curateSources(sources),
       message: false,
     };
   },
