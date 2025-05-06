@@ -176,7 +176,7 @@ async function chatSync({
   // If we are here we know that we are in a workspace that is:
   // 1. Chatting in "chat" mode and may or may _not_ have embeddings
   // 2. Chatting in "query" mode and has at least 1 embedding
-  let contextTexts = [];
+  let contextDocuments = [];
   let sources = [];
   let pinnedDocIdentifiers = [];
   const { rawHistory, chatHistory } = await recentChatHistory({
@@ -196,7 +196,7 @@ async function chatSync({
       pinnedDocs.forEach((doc) => {
         const { pageContent, ...metadata } = doc;
         pinnedDocIdentifiers.push(sourceIdentifier(doc));
-        contextTexts.push(doc.pageContent);
+        contextDocuments.push(doc);
         sources.push({
           text:
             pageContent.slice(0, 1_000) +
@@ -218,7 +218,6 @@ async function chatSync({
           rerank: workspace?.vectorSearchMode === "rerank",
         })
       : {
-          contextTexts: [],
           sources: [],
           message: null,
         };
@@ -266,12 +265,18 @@ async function chatSync({
   // If a past citation was used to answer the question - that is visible in the history so it logically makes sense
   // and does not appear to the user that a new response used information that is otherwise irrelevant for a given prompt.
   // TLDR; reduces GitHub issues for "LLM citing document that has no answer in it" while keep answers highly accurate.
-  contextTexts = [...contextTexts, ...filledSources.contextTexts];
-  sources = [...sources, ...vectorSearchResults.sources];
+  // Combine documents for context: Pinned docs + Historical fill docs + Current search results.
+  contextDocuments = [
+    ...contextDocuments,
+    ...(filledSources.sources || []),
+    ...(vectorSearchResults.sources || [])
+  ];
+  // Sources for citation are pinned + current search
+  sources = [...sources, ...(vectorSearchResults.sources || [])];
 
   // If in query mode and no context chunks are found from search, backfill, or pins -  do not
   // let the LLM try to hallucinate a response or use general knowledge and exit early
-  if (chatMode === "query" && contextTexts.length === 0) {
+  if (chatMode === "query" && contextDocuments.length === 0) {
     const textResponse =
       workspace?.queryRefusalResponse ??
       "There is no relevant information in this workspace to answer your query.";
@@ -309,7 +314,7 @@ async function chatSync({
     {
       systemPrompt: await chatPrompt(workspace, user),
       userPrompt: message,
-      contextTexts,
+      contextDocuments,
       chatHistory,
       attachments,
     },
@@ -524,7 +529,7 @@ async function streamChat({
   // 2. Chatting in "query" mode and has at least 1 embedding
   let completeText;
   let metrics = {};
-  let contextTexts = [];
+  let contextDocuments = [];
   let sources = [];
   let pinnedDocIdentifiers = [];
   const { rawHistory, chatHistory } = await recentChatHistory({
@@ -550,7 +555,7 @@ async function streamChat({
       pinnedDocs.forEach((doc) => {
         const { pageContent, ...metadata } = doc;
         pinnedDocIdentifiers.push(sourceIdentifier(doc));
-        contextTexts.push(doc.pageContent);
+        contextDocuments.push(doc);
         sources.push({
           text:
             pageContent.slice(0, 1_000) +
@@ -572,7 +577,6 @@ async function streamChat({
           rerank: workspace?.vectorSearchMode === "rerank",
         })
       : {
-          contextTexts: [],
           sources: [],
           message: null,
         };
@@ -621,12 +625,18 @@ async function streamChat({
   // If a past citation was used to answer the question - that is visible in the history so it logically makes sense
   // and does not appear to the user that a new response used information that is otherwise irrelevant for a given prompt.
   // TLDR; reduces GitHub issues for "LLM citing document that has no answer in it" while keep answers highly accurate.
-  contextTexts = [...contextTexts, ...filledSources.contextTexts];
-  sources = [...sources, ...vectorSearchResults.sources];
+  // Combine documents for context: Pinned docs + Historical fill docs + Current search results.
+  contextDocuments = [
+    ...contextDocuments,
+    ...(filledSources.sources || []),
+    ...(vectorSearchResults.sources || [])
+  ];
+  // Sources for citation are pinned + current search
+  sources = [...sources, ...(vectorSearchResults.sources || [])];
 
   // If in query mode and no context chunks are found from search, backfill, or pins -  do not
   // let the LLM try to hallucinate a response or use general knowledge and exit early
-  if (chatMode === "query" && contextTexts.length === 0) {
+  if (chatMode === "query" && contextDocuments.length === 0) {
     const textResponse =
       workspace?.queryRefusalResponse ??
       "There is no relevant information in this workspace to answer your query.";
@@ -664,7 +674,7 @@ async function streamChat({
     {
       systemPrompt: await chatPrompt(workspace, user),
       userPrompt: message,
-      contextTexts,
+      contextDocuments,
       chatHistory,
       attachments,
     },
