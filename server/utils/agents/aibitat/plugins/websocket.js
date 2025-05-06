@@ -84,8 +84,11 @@ const websocket = {
         // });
 
         aibitat.onMessage((message) => {
-          if (message.from !== "USER")
-            Telemetry.sendTelemetry("agent_chat_sent");
+          if (message.from !== "USER") {
+            console.log("Sent message to server:", message.content);
+            // // Telemetry Event
+            // Telemetry.sendTelemetry("agent_chat_sent");
+          }
           if (message.from === "USER" && muteUserReply) return;
           socket.send(JSON.stringify(message));
         });

@@ -68,14 +68,6 @@ function chatEndpoints(app) {
           null,
           attachments
         );
-        await Telemetry.sendTelemetry("sent_chat", {
-          multiUserMode: multiUserMode(response),
-          LLMSelection: process.env.LLM_PROVIDER || "openai",
-          Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-          VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-          multiModal: Array.isArray(attachments) && attachments?.length !== 0,
-          TTSSelection: process.env.TTS_PROVIDER || "native",
-        });
 
         await EventLogs.logEvent(
           "sent_chat",
@@ -170,15 +162,6 @@ function chatEndpoints(app) {
               },
             });
           },
-        });
-
-        await Telemetry.sendTelemetry("sent_chat", {
-          multiUserMode: multiUserMode(response),
-          LLMSelection: process.env.LLM_PROVIDER || "openai",
-          Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-          VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-          multiModal: Array.isArray(attachments) && attachments?.length !== 0,
-          TTSSelection: process.env.TTS_PROVIDER || "native",
         });
 
         await EventLogs.logEvent(

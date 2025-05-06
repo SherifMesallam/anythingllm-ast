@@ -148,13 +148,14 @@ function apiOpenAICompatibleEndpoints(app) {
             temperature: Number(temperature),
           });
 
-          await Telemetry.sendTelemetry("sent_chat", {
-            LLMSelection:
-              workspace.chatProvider ?? process.env.LLM_PROVIDER ?? "openai",
-            Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-            VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-            TTSSelection: process.env.TTS_PROVIDER || "native",
-          });
+          // // Telemetry Event
+          // await Telemetry.sendTelemetry("sent_chat", {
+          //   LLMSelection:
+          //     workspace.chatProvider ?? process.env.LLM_PROVIDER ?? "openai",
+          //   Embedder: process.env.EMBEDDING_ENGINE || "inherit",
+          //   VectorDbSelection: process.env.VECTOR_DB || "lancedb",
+          //   TTSSelection: process.env.TTS_PROVIDER || "native",
+          // });
           await EventLogs.logEvent("api_sent_chat", {
             workspaceName: workspace?.name,
             chatModel: workspace?.chatModel || "System Default",
@@ -176,12 +177,13 @@ function apiOpenAICompatibleEndpoints(app) {
           temperature: Number(temperature),
           response,
         });
-        await Telemetry.sendTelemetry("sent_chat", {
-          LLMSelection: process.env.LLM_PROVIDER || "openai",
-          Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-          VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-          TTSSelection: process.env.TTS_PROVIDER || "native",
-        });
+        // // Telemetry Event
+        // await Telemetry.sendTelemetry("sent_chat", {
+        //   LLMSelection: process.env.LLM_PROVIDER || "openai",
+        //   Embedder: process.env.EMBEDDING_ENGINE || "inherit",
+        //   VectorDbSelection: process.env.VECTOR_DB || "lancedb",
+        //   TTSSelection: process.env.TTS_PROVIDER || "native",
+        // });
         await EventLogs.logEvent("api_sent_chat", {
           workspaceName: workspace?.name,
           chatModel: workspace?.chatModel || "System Default",

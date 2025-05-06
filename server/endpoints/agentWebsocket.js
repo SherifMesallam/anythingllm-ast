@@ -47,7 +47,9 @@ function agentWebsocket(app) {
         }
       };
 
-      await Telemetry.sendTelemetry("agent_chat_started");
+      // // Telemetry Event
+      // await Telemetry.sendTelemetry("agent_chat_started");
+
       await agentHandler.createAIbitat({ socket });
       await agentHandler.startAgentCluster();
     } catch (e) {

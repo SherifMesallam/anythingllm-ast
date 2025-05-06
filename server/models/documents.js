@@ -125,12 +125,13 @@ const Document = {
       }
     }
 
-    await Telemetry.sendTelemetry("documents_embedded_in_workspace", {
-      LLMSelection: process.env.LLM_PROVIDER || "openai",
-      Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-      VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-      TTSSelection: process.env.TTS_PROVIDER || "native",
-    });
+    // // Telemetry Event
+    // await Telemetry.sendTelemetry("documents_embedded_in_workspace", {
+    //   LLMSelection: process.env.LLM_PROVIDER || "openai",
+    //   Embedder: process.env.EMBEDDING_ENGINE || "inherit",
+    //   VectorDbSelection: process.env.VECTOR_DB || "lancedb",
+    //   TTSSelection: process.env.TTS_PROVIDER || "native",
+    // });
     await EventLogs.logEvent(
       "workspace_documents_added",
       {
@@ -169,12 +170,13 @@ const Document = {
       }
     }
 
-    await Telemetry.sendTelemetry("documents_removed_in_workspace", {
-      LLMSelection: process.env.LLM_PROVIDER || "openai",
-      Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-      VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-      TTSSelection: process.env.TTS_PROVIDER || "native",
-    });
+    // // Telemetry Event
+    // await Telemetry.sendTelemetry("documents_removed_in_workspace", {
+    //   LLMSelection: process.env.LLM_PROVIDER || "openai",
+    //   Embedder: process.env.EMBEDDING_ENGINE || "inherit",
+    //   VectorDbSelection: process.env.VECTOR_DB || "lancedb",
+    //   TTSSelection: process.env.TTS_PROVIDER || "native",
+    // });
     await EventLogs.logEvent(
       "workspace_documents_removed",
       {

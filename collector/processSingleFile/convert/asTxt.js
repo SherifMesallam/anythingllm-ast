@@ -7,7 +7,6 @@ const {
   writeToServerDocuments,
 } = require("../../utils/files");
 const { default: slugify } = require("slugify");
-const dayjs = require("dayjs");
 
 async function asTxt({ fullFilePath = "", filename = "" }) {
   let content = "";
@@ -33,7 +32,7 @@ async function asTxt({ fullFilePath = "", filename = "" }) {
     url: "file://" + fullFilePath,
     title: filename,
     chunkSource: "",
-    published: dayjs().unix(),
+    published: Math.floor(Date.now() / 1000),
     wordCount: content.split(" ").length,
     pageContent: content,
     token_count_estimate: tokenizeString(content),

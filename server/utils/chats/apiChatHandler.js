@@ -82,8 +82,6 @@ async function chatSync({
   message = processedMessage;
 
   if (EphemeralAgentHandler.isAgentInvocation({ message })) {
-    await Telemetry.sendTelemetry("agent_chat_started");
-
     // Initialize the EphemeralAgentHandler to handle non-continuous
     // conversations with agents since this is over REST.
     const agentHandler = new EphemeralAgentHandler({
@@ -426,8 +424,6 @@ async function streamChat({
   message = processedMessage;
 
   if (EphemeralAgentHandler.isAgentInvocation({ message })) {
-    await Telemetry.sendTelemetry("agent_chat_started");
-
     // Initialize the EphemeralAgentHandler to handle non-continuous
     // conversations with agents since this is over REST.
     const agentHandler = new EphemeralAgentHandler({

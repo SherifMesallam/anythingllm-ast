@@ -89,13 +89,14 @@ function apiWorkspaceThreadEndpoints(app) {
           { name, slug }
         );
 
-        await Telemetry.sendTelemetry("workspace_thread_created", {
-          multiUserMode: multiUserMode(response),
-          LLMSelection: process.env.LLM_PROVIDER || "openai",
-          Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-          VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-          TTSSelection: process.env.TTS_PROVIDER || "native",
-        });
+        // // Telemetry Event
+        // await Telemetry.sendTelemetry("workspace_thread_created", {
+        //   multiUserMode: multiUserMode(response),
+        //   LLMSelection: process.env.LLM_PROVIDER || "openai",
+        //   Embedder: process.env.EMBEDDING_ENGINE || "inherit",
+        //   VectorDbSelection: process.env.VECTOR_DB || "lancedb",
+        //   TTSSelection: process.env.TTS_PROVIDER || "native",
+        // });
         await EventLogs.logEvent("api_workspace_thread_created", {
           workspaceName: workspace?.name || "Unknown Workspace",
         });
@@ -431,29 +432,41 @@ function apiWorkspaceThreadEndpoints(app) {
           attachments,
           reset,
         });
-        await Telemetry.sendTelemetry("sent_chat", {
-          LLMSelection: process.env.LLM_PROVIDER || "openai",
-          Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-          VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-          TTSSelection: process.env.TTS_PROVIDER || "native",
-        });
+        // // Telemetry Event
+        // await Telemetry.sendTelemetry("sent_chat", {
+        //   LLMSelection: process.env.LLM_PROVIDER || "openai",
+        //   Embedder: process.env.EMBEDDING_ENGINE || "inherit",
+        //   VectorDbSelection: process.env.VECTOR_DB || "lancedb",
+        //   TTSSelection: process.env.TTS_PROVIDER || "native",
+        // });
         await EventLogs.logEvent("api_sent_chat", {
           workspaceName: workspace?.name,
           chatModel: workspace?.chatModel || "System Default",
           threadName: thread?.name,
           userId: user?.id,
         });
-        response.status(200).json({ ...result });
+        // Explicitly handle BigInt serialization
+        response.setHeader('Content-Type', 'application/json');
+        response.status(200).send(JSON.stringify(result, (key, value) =>
+          typeof value === 'bigint'
+            ? value.toString()
+            : value // return everything else unchanged
+        ));
       } catch (e) {
         console.error(e.message, e);
-        response.status(500).json({
+        // Also handle BigInt in error response if necessary, although less likely
+        const errorPayload = {
           id: uuidv4(),
           type: "abort",
           textResponse: null,
           sources: [],
           close: true,
           error: e.message,
-        });
+        };
+        response.setHeader('Content-Type', 'application/json');
+        response.status(500).send(JSON.stringify(errorPayload, (key, value) =>
+          typeof value === 'bigint' ? value.toString() : value
+        ));
       }
     }
   );
@@ -601,12 +614,13 @@ function apiWorkspaceThreadEndpoints(app) {
           attachments,
           reset,
         });
-        await Telemetry.sendTelemetry("sent_chat", {
-          LLMSelection: process.env.LLM_PROVIDER || "openai",
-          Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-          VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-          TTSSelection: process.env.TTS_PROVIDER || "native",
-        });
+        // // Telemetry Event
+        // await Telemetry.sendTelemetry("sent_chat", {
+        //   LLMSelection: process.env.LLM_PROVIDER || "openai",
+        //   Embedder: process.env.EMBEDDING_ENGINE || "inherit",
+        //   VectorDbSelection: process.env.VECTOR_DB || "lancedb",
+        //   TTSSelection: process.env.TTS_PROVIDER || "native",
+        // });
         await EventLogs.logEvent("api_sent_chat", {
           workspaceName: workspace?.name,
           chatModel: workspace?.chatModel || "System Default",

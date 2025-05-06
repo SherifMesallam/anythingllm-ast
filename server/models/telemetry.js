@@ -84,6 +84,9 @@ const Telemetry = {
     subUserId = null,
     silent = false
   ) {
+    // If telemetry disabled or in dev mode, return early.
+    return;
+
     try {
       const { client, distinctId: systemId } = await this.connect();
       if (!client) return;

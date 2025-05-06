@@ -555,9 +555,10 @@ function systemEndpoints(app) {
           },
           true
         );
-        await Telemetry.sendTelemetry("enabled_multi_user_mode", {
-          multiUserMode: true,
-        });
+        // // Telemetry Event
+        // await Telemetry.sendTelemetry("enabled_multi_user_mode", {
+        //   multiUserMode: true,
+        // });
         await EventLogs.logEvent("multi_user_mode_enabled", {}, user?.id);
         response.status(200).json({ success: !!user, error });
       } catch (e) {

@@ -33,9 +33,10 @@ function agentFlowEndpoints(app) {
         }
 
         if (!uuid) {
-          await Telemetry.sendTelemetry("agent_flow_created", {
-            blockCount: config.blocks?.length || 0,
-          });
+          // Telemetry Event
+          // await Telemetry.sendTelemetry("agent_flow_created", {
+          //   blockCount: config.blocks?.length || 0,
+          // });
         }
 
         return response.status(200).json({

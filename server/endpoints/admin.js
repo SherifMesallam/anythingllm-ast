@@ -514,16 +514,12 @@ function adminEndpoints(app) {
         const user = await userFromSession(request, response);
         const { apiKey, error } = await ApiKey.create(user.id);
 
-        await Telemetry.sendTelemetry("api_key_created");
         await EventLogs.logEvent(
           "api_key_created",
           { createdBy: user?.username },
           user?.id
         );
-        return response.status(200).json({
-          apiKey,
-          error,
-        });
+        response.status(200).json({ apiKey, error });
       } catch (e) {
         console.error(e);
         response.sendStatus(500).end();

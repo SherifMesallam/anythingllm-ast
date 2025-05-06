@@ -428,7 +428,8 @@ const Workspace = {
     )
       return;
 
-    await Telemetry.sendTelemetry("workspace_prompt_changed");
+    // // Telemetry Event
+    // await Telemetry.sendTelemetry("workspace_prompt_changed");
     await EventLogs.logEvent(
       "workspace_prompt_changed",
       {

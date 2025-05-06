@@ -109,7 +109,12 @@ class FlowExecutor {
    * @param {Object} aibitat - The aibitat instance from the agent handler
    */
   async executeFlow(flow, initialVariables = {}, aibitat) {
-    await Telemetry.sendTelemetry("agent_flow_execution_started");
+    // const agent = new Aibitat({ agentDefinition, executor: this, user });
+
+    // // Telemetry Event
+    // await Telemetry.sendTelemetry("agent_flow_execution_started");
+    this.log("Agent flow execution started", "info");
+    // await agent.start(initialPayload);
 
     // Initialize variables with both initial values and any passed-in values
     this.variables = {

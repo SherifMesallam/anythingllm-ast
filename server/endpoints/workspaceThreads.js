@@ -33,17 +33,18 @@ function workspaceThreadEndpoints(app) {
           workspace,
           user?.id
         );
-        await Telemetry.sendTelemetry(
-          "workspace_thread_created",
-          {
-            multiUserMode: multiUserMode(response),
-            LLMSelection: process.env.LLM_PROVIDER || "openai",
-            Embedder: process.env.EMBEDDING_ENGINE || "inherit",
-            VectorDbSelection: process.env.VECTOR_DB || "lancedb",
-            TTSSelection: process.env.TTS_PROVIDER || "native",
-          },
-          user?.id
-        );
+        // // Telemetry Event
+        // await Telemetry.sendTelemetry(
+        //   "workspace_thread_created",
+        //   {
+        //     multiUserMode: multiUserMode(response),
+        //     LLMSelection: process.env.LLM_PROVIDER || "openai",
+        //     Embedder: process.env.EMBEDDING_ENGINE || "inherit",
+        //     VectorDbSelection: process.env.VECTOR_DB || "lancedb",
+        //     TTSSelection: process.env.TTS_PROVIDER || "native",
+        //   },
+        //   user?.id
+        // );
 
         await EventLogs.logEvent(
           "workspace_thread_created",

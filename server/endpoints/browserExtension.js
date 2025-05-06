@@ -116,7 +116,8 @@ function browserExtensionEndpoints(app) {
           return;
         }
 
-        await Telemetry.sendTelemetry("browser_extension_embed_content");
+        // // Telemetry Event
+        // await Telemetry.sendTelemetry("browser_extension_embed_content");
         response.status(200).json({ success: true });
       } catch (error) {
         console.error(error);
@@ -132,7 +133,7 @@ function browserExtensionEndpoints(app) {
       try {
         const { textContent, metadata } = reqBody(request);
         const Collector = new CollectorApi();
-        const { success, reason } = await Collector.processRawText(
+        const { success, reason, documents } = await Collector.processRawText(
           textContent,
           metadata
         );
@@ -142,8 +143,9 @@ function browserExtensionEndpoints(app) {
           return;
         }
 
-        await Telemetry.sendTelemetry("browser_extension_upload_content");
-        response.status(200).json({ success: true });
+        // // Telemetry Event
+        // await Telemetry.sendTelemetry("browser_extension_upload_content");
+        response.status(200).json({ documents });
       } catch (error) {
         console.error(error);
         response.status(500).json({ error: "Failed to embed content" });

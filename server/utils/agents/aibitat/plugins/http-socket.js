@@ -63,7 +63,7 @@ const httpSocket = {
         // so we end on first response.
         aibitat.onMessage((message) => {
           if (message.from !== "USER")
-            Telemetry.sendTelemetry("agent_chat_sent");
+            console.log("Sent message to server:", message.content);
           if (message.from === "USER" && muteUserReply) return;
           handler.send(JSON.stringify(message));
           handler.close();

@@ -24,9 +24,9 @@ async function setupTelemetry() {
     `\x1b[32m[TELEMETRY ENABLED]\x1b[0m Anonymous Telemetry enabled. Telemetry helps Mintplex Labs Inc improve AnythingLLM.`
   );
   await Telemetry.findOrCreateId();
-  await Telemetry.sendTelemetry("server_boot", {
-    commit: getGitVersion(),
-  });
+  // await Telemetry.sendTelemetry("server_boot", {
+  //   commit: getGitVersion(),
+  // });
   return;
 }
 

@@ -89,9 +89,18 @@ async function recentChatHistory({
  * @returns {Promise<string>} - the base prompt
  */
 async function chatPrompt(workspace, user = null) {
-  const basePrompt =
-    workspace?.openAiPrompt ??
-    "Given the following conversation, relevant context, and a follow up question, reply with an answer to the current question the user is asking. Return only your response to the question given the above information following the users instructions as needed.";
+  // Define the expert persona and core instructions
+  const personaInstructions = `You are an expert senior software engineer specializing in the development of Gravity Forms itself and its extensive ecosystem of add-ons. You have a deep understanding of its internal architecture, hooks, filters, APIs, and best practices for extending its functionality. Your advice reflects this core developer perspective, emphasizing robust, maintainable, and performant solutions.
+
+Given the following conversation, relevant context, and a follow-up question, reply with an answer to the current question the user is asking. Leverage your expertise and the provided context to formulate your response.
+
+IMPORTANT CONSTRAINTS:
+1.  Absolutely do not refer to the context chunks by number (e.g., 'Context 1', 'Chunk 2') in your answer. Synthesize the information naturally as if it's coming from your own knowledge, informed by the provided documents.
+2.  Base your answers strictly on the provided context documents and your established WordPress/Gravity Forms knowledge. Do not speculate, guess, or provide hypothetical solutions if the information is not present in the context or your core expertise.
+3.  If the provided context is insufficient to give a definitive, non-hypothetical answer, or if the user's question is ambiguous, clearly state what information is missing and ask clarifying questions. Do not attempt to answer if you lack the necessary details.`;
+
+  // Use the workspace prompt if available, otherwise use the new persona instructions
+  const basePrompt = workspace?.openAiPrompt ?? personaInstructions;
 
   const metadataInstructions = `\n\n---
 CONTEXT & METADATA INSTRUCTIONS:
@@ -99,7 +108,7 @@ Context sources are provided in the following format. Note that not all metadata
 --- Context Chunk [N] ---
 Source File: [Filename/Path of the original source file]
 Language: [Detected programming language (e.g., js, php, css)]
-Feature Context: [Inferred feature/plugin/theme name based on file path]
+Feature Context: [Inferred user-facing feature name based on file path]
 Element Type: [Type of code structure (e.g., CLASS, METHOD, FUNCTION, RULE, AT_RULE, code-segment)]
 Element Name: [Name of the specific function, class, method, selector, etc.]
 Parent Context: [Name of the parent structure, like a class containing a method]

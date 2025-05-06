@@ -630,7 +630,8 @@ ${this.getHistory({ to: route.to })
       }
 
       const result = await fn.handler(args);
-      Telemetry.sendTelemetry("agent_tool_call", { tool: name }, null, true);
+      // // Telemetry Event
+      // Telemetry.sendTelemetry("agent_tool_call", { tool: name }, null, true);
       return await this.handleExecution(
         provider,
         [
