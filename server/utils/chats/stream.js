@@ -314,7 +314,7 @@ async function streamChatWithWorkspace(
       type: "finalizeResponseStream",
       close: true,
       error: false,
-      chatId: chat.id,
+      chatId: String(chat.id),
       metrics,
     });
     return;

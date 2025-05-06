@@ -359,7 +359,7 @@ async function chatSync({
     type: "textResponse",
     close: true,
     error: null,
-    chatId: chat.id,
+    chatId: String(chat.id),
     textResponse,
     sources,
     metrics: performanceMetrics,
@@ -727,7 +727,7 @@ async function streamChat({
       type: "finalizeResponseStream",
       close: true,
       error: false,
-      chatId: chat.id,
+      chatId: String(chat.id),
       metrics,
     });
     return;
