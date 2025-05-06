@@ -316,8 +316,10 @@ async function chatSync({
     rawHistory
   );
 
-  // Log the complete request before sending to LLM
-  console.log("LLM Request (sync):", JSON.stringify(messages, null, 2));
+  // Log the complete request before sending to LLM with a clear API indicator
+  console.log("\n====== [API CHAT REQUEST] - FINAL LLM REQUEST ======");
+  console.log(JSON.stringify(messages, null, 2));
+  console.log("====================================================\n");
 
   // Send the text completion.
   const { textResponse, metrics: performanceMetrics } =
@@ -669,19 +671,19 @@ async function streamChat({
     rawHistory
   );
 
-  // Log the complete request before sending to LLM
-  console.log("LLM Request (stream):", JSON.stringify(messages, null, 2));
+  // Log the complete request before sending to LLM with clear API streaming indicator
+  console.log("\n====== [API STREAM REQUEST] - FINAL LLM REQUEST ======");
+  console.log(JSON.stringify(messages, null, 2));
+  console.log("====================================================\n");
 
   // If streaming is not explicitly enabled for connector
   // we do regular waiting of a response and send a single chunk.
   if (LLMConnector.streamingEnabled() !== true) {
-    console.log(
-      `\x1b[31m[STREAMING DISABLED]\x1b[0m Streaming is not available for ${LLMConnector.constructor.name}. Will use regular chat method.`
-    );
     const { textResponse, metrics: performanceMetrics } =
       await LLMConnector.getChatCompletion(messages, {
         temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
       });
+
     completeText = textResponse;
     metrics = performanceMetrics;
     writeResponseChunk(response, {

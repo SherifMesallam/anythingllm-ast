@@ -47,17 +47,8 @@ There is a supplemental version of this function that also returns a formatted s
 */
 
 async function messageArrayCompressor(llm, messages = [], rawHistory = []) {
-  // Wrap initial logging in try/catch
-  try {
-    // --- BEGIN SIMPLIFIED LOGGING ---
-    console.log("\x1b[36m[DEBUG] messageArrayCompressor: Entered function.\x1b[0m");
-    console.log(`\x1b[36m[DEBUG] messageArrayCompressor: LLM provider class: ${llm?.constructor?.name}\x1b[0m`);
-    console.log(`\x1b[36m[DEBUG] messageArrayCompressor: Received ${messages?.length ?? '??'} messages initially.\x1b[0m`);
-    // --- END SIMPLIFIED LOGGING ---
-  } catch (logError) {
-    console.error("\x1b[31m[ERROR] messageArrayCompressor: Failed during initial logging!\x1b[0m", logError);
-  }
-
+  // Removed noisy logging - only report critical information
+  
   // assume the response will be at least 600 tokens. If the total prompt + reply is over we need to proactively
   // run the compressor to ensure the prompt has enough space to reply.
   // realistically - most users will not be impacted by this.
@@ -92,10 +83,7 @@ async function messageArrayCompressor(llm, messages = [], rawHistory = []) {
     const systemTokenCount = tokenManager.countFromString(system.content);
     const systemLimit = llm.limits.system; // Get the budget
 
-    // --- BEGIN DETAILED BUDGET LOGGING ---
-    console.log(`[messageArrayCompressor] System Limit Budget: ${systemLimit} tokens.`);
-    console.log(`[messageArrayCompressor] Original System Token Count: ${systemTokenCount} tokens.`);
-    // --- END DETAILED BUDGET LOGGING ---
+    // Removed noisy debug logs
 
     // If the whole system message fits, we are done.
     if (systemTokenCount < systemLimit) {
@@ -122,10 +110,7 @@ async function messageArrayCompressor(llm, messages = [], rawHistory = []) {
     let compressedContextPart = contextPart;
     let finalContextTokenCount = tokenManager.countFromString(contextPart); // Initialize
 
-    // --- BEGIN DETAILED BUDGET LOGGING ---
-    console.log(`[messageArrayCompressor] Base Prompt Token Count: ${basePromptTokenCount} tokens.`);
-    console.log(`[messageArrayCompressor] Original Context Part Token Count: ${finalContextTokenCount} tokens.`);
-    // --- END DETAILED BUDGET LOGGING ---
+    // Removed noisy debug logs
 
     // Check if the base prompt *alone* exceeds the total system limit
     if (basePromptTokenCount >= systemLimit) {
@@ -144,9 +129,7 @@ async function messageArrayCompressor(llm, messages = [], rawHistory = []) {
       const remainingContextBudget = systemLimit - basePromptTokenCount;
       const contextPartTokenCount = tokenManager.countFromString(contextPart);
 
-      // --- BEGIN DETAILED BUDGET LOGGING ---
-      console.log(`[messageArrayCompressor] Remaining Budget for Context: ${remainingContextBudget} tokens.`);
-      // --- END DETAILED BUDGET LOGGING ---
+      // Removed noisy debug logs
 
       if (contextPartTokenCount > remainingContextBudget) {
         console.log(`[messageArrayCompressor] Compressing context part (${contextPartTokenCount} tokens) to fit remaining budget (${remainingContextBudget} tokens).`);
@@ -156,7 +139,7 @@ async function messageArrayCompressor(llm, messages = [], rawHistory = []) {
           tiktokenInstance: tokenManager,
         });
         finalContextTokenCount = tokenManager.countFromString(compressedContextPart);
-        console.log(`[messageArrayCompressor] Context Part AFTER compression: ${finalContextTokenCount} tokens.`);
+        // Removed noisy debug logs
       } else {
         // Context part fits within remaining budget, keep it as is.
         compressedContextPart = contextPart;
@@ -245,6 +228,8 @@ async function messageArrayCompressor(llm, messages = [], rawHistory = []) {
 
 // Implementation of messageArrayCompressor, but for string only completion models
 async function messageStringCompressor(llm, promptArgs = {}, rawHistory = []) {
+  // Removed noisy logging
+  
   const tokenBuffer = 600;
   const tokenManager = new TokenManager(llm.model);
   const initialPrompt = llm.constructPrompt(promptArgs);
