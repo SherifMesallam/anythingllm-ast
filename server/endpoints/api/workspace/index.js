@@ -14,7 +14,6 @@ const {
   writeResponseChunk,
 } = require("../../../utils/helpers/chat/responses");
 const { ApiChatHandler } = require("../../../utils/chats/apiChatHandler");
-const { safeJsonParse } = require("../../utils/http");
 
 // Helper function to recursively convert BigInts to strings
 function sanitizeBigInts(obj) {
