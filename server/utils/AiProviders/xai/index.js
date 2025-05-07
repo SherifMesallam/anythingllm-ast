@@ -35,16 +35,41 @@ class XAiLLM {
     console.log(`\x1b[36m[${this.constructor.name}]\x1b[0m ${text}`, ...args);
   }
 
-  #appendContext(contextTexts = []) {
-    if (!contextTexts || !contextTexts.length) return "";
-    return (
-      "\nContext:\n" +
-      contextTexts
-        .map((text, i) => {
-          return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
+  #appendContext(contextDocuments = [], userPrompt = "") {
+    if (!contextDocuments || !contextDocuments.length) return "";
+
+    const includeMetadata = !userPrompt.includes('[nometa]');
+    this.log(`#appendContext: Metadata inclusion flag '[nometa]' ${includeMetadata ? 'not found' : 'found'}. Including metadata: ${includeMetadata}`);
+
+    let fullContextString = "\nContext:\n";
+
+    if (includeMetadata) {
+      fullContextString += contextDocuments
+        .map((doc, i) => {
+          const text = doc.text || doc.pageContent || "";
+          const metadata = doc.metadata || doc;
+          
+          let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
+          if (metadata.title) formattedChunk += `Title: ${metadata.title}\n`;
+          if (metadata.docSource) formattedChunk += `Source: ${metadata.docSource}\n`;
+          const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
+          formattedChunk += `--- Text ---\n${cleanedText}\n`;
+          formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`;
+          return formattedChunk;
         })
-        .join("")
-    );
+        .join("");
+    } else {
+      fullContextString += contextDocuments
+        .map((doc, i) => {
+          const text = doc.text || doc.pageContent || "";
+          const metadata = doc.metadata || doc;
+          const sourceFile = metadata.filePath || metadata.title || metadata.filename || metadata.source || 'Unknown';
+          const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
+          return `--- Context Chunk ${i + 1} ---\nSource File: ${sourceFile}\n--- Text ---\n${cleanedText}\n--- End Context Chunk ${i + 1} ---\n\n`;
+        })
+        .join("");
+    }
+    return fullContextString;
   }
 
   streamingEnabled() {
@@ -93,14 +118,14 @@ class XAiLLM {
    */
   constructPrompt({
     systemPrompt = "",
-    contextTexts = [],
+    contextDocuments = [],
     chatHistory = [],
     userPrompt = "",
     attachments = [], // This is the specific attachment for only this prompt
   }) {
     const prompt = {
       role: "system",
-      content: `${systemPrompt}${this.#appendContext(contextTexts)}`,
+      content: `${systemPrompt}${this.#appendContext(contextDocuments, userPrompt)}`,
     };
     return [
       prompt,
