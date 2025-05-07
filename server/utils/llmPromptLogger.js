@@ -2,7 +2,7 @@ const fs = require('fs').promises;
 const path = require('path');
 
 // Log directory will be in project_root/logs
-const LOG_DIR = path.join(__dirname, '../../../logs');
+const LOG_DIR = path.join(__dirname, '/storage/logs');
 const LOG_FILE_PATH = process.env.LLM_PROMPT_LOG_PATH || path.join(LOG_DIR, 'llm_prompts.log');
 
 async function ensureLogDirectoryExists() {
