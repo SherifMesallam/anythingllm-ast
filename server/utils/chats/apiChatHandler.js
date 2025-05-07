@@ -14,6 +14,7 @@ const {
   EphemeralEventListener,
 } = require("../agents/ephemeral");
 const { Telemetry } = require("../../models/telemetry");
+const { logLlmPrompt } = require("../llmPromptLogger");
 
 /**
  * @typedef ResponseObject
@@ -235,21 +236,6 @@ async function chatSync({
     };
   }
 
-  // <<< CORRECTED LOGGING HERE >>>
-  try {
-    // Access properties directly from the source object
-    const sourceInfo = vectorSearchResults.sources.map(source => ({
-      docSource: source?.docSource || 'N/A', // Corrected: No '.metadata'
-      sourceType: source?.sourceType || 'N/A' // Corrected: No '.metadata'
-    }));
-    console.log("Retrieved Vector Search Source Info:", JSON.stringify(sourceInfo, null, 2));
-  } catch (e) {
-    console.log("Error logging source info:", e.message);
-    // Log the original structure in case of error for easier debugging
-    console.log("Original sources structure:", JSON.stringify(vectorSearchResults.sources, null, 2));
-  }
-  // <<< END LOGGING >>>
-
   const { fillSourceWindow } = require("../helpers/chat");
   const filledSources = fillSourceWindow({
     nDocs: workspace?.topN || 4,
@@ -325,6 +311,16 @@ async function chatSync({
   console.log("\n====== [API CHAT REQUEST] - FINAL LLM REQUEST ======");
   console.log(JSON.stringify(messages, null, 2));
   console.log("====================================================\n");
+
+  // Log the prompt before sending to LLM
+  await logLlmPrompt({
+    source: 'API_SYNC',
+    workspaceId: workspace?.id,
+    threadId: thread?.id,
+    userId: user?.id,
+    sessionId,
+    messages
+  });
 
   // Send the text completion.
   const { textResponse, metrics: performanceMetrics } =
@@ -595,21 +591,6 @@ async function streamChat({
     return;
   }
 
-  // <<< CORRECTED LOGGING HERE >>>
-  try {
-    // Access properties directly from the source object
-    const sourceInfo = vectorSearchResults.sources.map(source => ({
-      docSource: source?.docSource || 'N/A', // Corrected: No '.metadata'
-      sourceType: source?.sourceType || 'N/A' // Corrected: No '.metadata'
-    }));
-    console.log("Retrieved Vector Search Source Info:", JSON.stringify(sourceInfo, null, 2));
-  } catch (e) {
-    console.log("Error logging source info:", e.message);
-    // Log the original structure in case of error for easier debugging
-    console.log("Original sources structure:", JSON.stringify(vectorSearchResults.sources, null, 2));
-  }
-  // <<< END LOGGING >>>
-
   const { fillSourceWindow } = require("../helpers/chat");
   const filledSources = fillSourceWindow({
     nDocs: workspace?.topN || 4,
@@ -685,6 +666,16 @@ async function streamChat({
   console.log("\n====== [API STREAM REQUEST] - FINAL LLM REQUEST ======");
   console.log(JSON.stringify(messages, null, 2));
   console.log("====================================================\n");
+
+  // Log the prompt before sending to LLM
+  await logLlmPrompt({
+    source: 'API_STREAM',
+    workspaceId: workspace?.id,
+    threadId: thread?.id,
+    userId: user?.id,
+    sessionId,
+    messages
+  });
 
   // If streaming is not explicitly enabled for connector
   // we do regular waiting of a response and send a single chunk.

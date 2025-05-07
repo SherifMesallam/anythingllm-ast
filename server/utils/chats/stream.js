@@ -11,6 +11,7 @@ const {
   recentChatHistory,
   sourceIdentifier,
 } = require("./index");
+const { logLlmPrompt } = require("../llmPromptLogger");
 
 const VALID_CHAT_MODE = ["chat", "query"];
 
@@ -260,6 +261,15 @@ async function streamChatWithWorkspace(
   console.log("\n====== [UI CHAT REQUEST] - FINAL LLM REQUEST ======");
   console.log(JSON.stringify(messages, null, 2));
   console.log("====================================================\n");
+
+  // Log the prompt before sending to LLM
+  await logLlmPrompt({
+    source: 'UI_STREAM',
+    workspaceId: workspace?.id,
+    threadId: thread?.id,
+    userId: user?.id,
+    messages
+  });
 
   // Send the text completion.
   if (!LLMConnector.streamingEnabled()) {
