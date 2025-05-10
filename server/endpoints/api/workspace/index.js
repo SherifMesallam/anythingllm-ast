@@ -1019,6 +1019,160 @@ function apiWorkspaceEndpoints(app) {
       }
     }
   );
+
+  app.post(
+    "/v1/workspaces/vector-search",
+    [validApiKey],
+    async (request, response) => {
+      /*
+    #swagger.tags = ['Workspaces']
+    #swagger.description = 'Perform a vector similarity search across all workspaces'
+    #swagger.requestBody = {
+      description: 'Query to perform vector search with and optional parameters',
+      required: true,
+      content: {
+        "application/json": {
+          example: {
+            query: "What is the meaning of life?",
+            topN: 4,
+            scoreThreshold: 0.75,
+            workspaceSlugs: ["workspace1", "workspace2"] // Optional: filter by specific workspaces
+          }
+        }
+      }
+    }
+    #swagger.responses[200] = {
+      content: {
+        "application/json": {
+          schema: {
+            type: 'object',
+            example: {
+              results: [
+                {
+                  id: "5a6bee0a-306c-47fc-942b-8ab9bf3899c4",
+                  text: "Document chunk content...",
+                  metadata: {
+                    workspaceSlug: "workspace1",
+                    workspaceName: "Workspace 1",
+                    url: "file://document.txt",
+                    title: "document.txt",
+                    author: "no author specified",
+                    description: "no description found",
+                    docSource: "post:123456",
+                    chunkSource: "document.txt",
+                    published: "12/1/2024, 11:39:39 AM",
+                    wordCount: 8,
+                    tokenCount: 9
+                  },
+                  distance: 0.541887640953064,
+                  score: 0.45811235904693604
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+    */
+      try {
+        const { query, topN, scoreThreshold, workspaceSlugs } = reqBody(request);
+
+        if (!query?.length)
+          return response.status(400).json({
+            message: "Query parameter cannot be empty.",
+          });
+
+        // Get all workspaces or filter by provided slugs
+        const workspaces = await Workspace.all();
+        const filteredWorkspaces = workspaceSlugs?.length 
+          ? workspaces.filter(w => workspaceSlugs.includes(w.slug))
+          : workspaces;
+
+        if (filteredWorkspaces.length === 0)
+          return response.status(200).json({
+            results: [],
+            message: "No valid workspaces found.",
+          });
+
+        const VectorDb = getVectorDbClass();
+        const LLMConnector = getLLMProvider();
+        const queryVector = await LLMConnector.embedTextInput(String(query));
+        
+        // Search across all workspaces
+        const allResults = [];
+        for (const workspace of filteredWorkspaces) {
+          const hasVectorizedSpace = await VectorDb.hasNamespace(workspace.slug);
+          const embeddingsCount = await VectorDb.namespaceCount(workspace.slug);
+
+          if (!hasVectorizedSpace || embeddingsCount === 0) continue;
+
+          const parseSimilarityThreshold = () => {
+            let input = parseFloat(scoreThreshold);
+            if (isNaN(input) || input < 0 || input > 1)
+              return workspace?.similarityThreshold ?? 0.25;
+            return input;
+          };
+
+          const parseTopN = () => {
+            let input = Number(topN);
+            if (isNaN(input) || input < 1) return workspace?.topN ?? 4;
+            return input;
+          };
+
+          const results = await VectorDb.performSimilaritySearch({
+            namespace: workspace.slug,
+            input: String(query),
+            LLMConnector,
+            similarityThreshold: parseSimilarityThreshold(),
+            topN: parseTopN(),
+            rerank: workspace?.vectorSearchMode === "rerank",
+          });
+
+          // Add workspace info to each result
+          const workspaceResults = results.sources.map(source => ({
+            ...source,
+            metadata: {
+              ...source.metadata,
+              workspaceSlug: workspace.slug,
+              workspaceName: workspace.name,
+            }
+          }));
+
+          allResults.push(...workspaceResults);
+        }
+
+        // Sort all results by score and take top N
+        const sortedResults = allResults
+          .sort((a, b) => b.score - a.score)
+          .slice(0, parseTopN());
+
+        response.status(200).json({
+          results: sortedResults.map((source) => ({
+            id: source.id,
+            text: source.text,
+            metadata: {
+              workspaceSlug: source.metadata.workspaceSlug,
+              workspaceName: source.metadata.workspaceName,
+              url: source.url,
+              title: source.title,
+              author: source.docAuthor,
+              description: source.description,
+              docSource: source.docSource,
+              chunkSource: source.chunkSource,
+              published: source.published,
+              wordCount: source.wordCount,
+              tokenCount: source.token_count_estimate,
+            },
+            distance: source._distance,
+            score: source.score,
+          })),
+        });
+      } catch (e) {
+        console.error(e.message, e);
+        response.sendStatus(500).end();
+      }
+    }
+  );
 }
 
 module.exports = { apiWorkspaceEndpoints };
