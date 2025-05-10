@@ -1083,7 +1083,7 @@ function apiWorkspaceEndpoints(app) {
           });
 
         // Get all workspaces or filter by provided slugs
-        const workspaces = await Workspace.all();
+        const workspaces = await Workspace.where();
         const filteredWorkspaces = workspaceSlugs?.length 
           ? workspaces.filter(w => workspaceSlugs.includes(w.slug))
           : workspaces;
