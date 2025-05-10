@@ -1,3 +1,94 @@
+const { v4: uuidv4 } = require("uuid");
+const { WorkspaceChats } = require("../../models/workspaceChats");
+const { resetMemory } = require("./commands/reset");
+const { convertToPromptHistory } = require("../helpers/chat/responses");
+const { SlashCommandPresets } = require("../../models/slashCommandsPresets");
+const { SystemPromptVariables } = require("../../models/systemPromptVariables");
+
+const VALID_COMMANDS = {
+  "/reset": resetMemory,
+};
+
+async function grepCommand(message, user = null) {
+  const userPresets = await SlashCommandPresets.getUserPresets(user?.id);
+  const availableCommands = Object.keys(VALID_COMMANDS);
+
+  // Check if the message starts with any built-in command
+  for (let i = 0; i < availableCommands.length; i++) {
+    const cmd = availableCommands[i];
+    const re = new RegExp(`^(${cmd})`, "i");
+    if (re.test(message)) {
+      return cmd;
+    }
+  }
+
+  // Replace all preset commands with their corresponding prompts
+  // Allows multiple commands in one message
+  let updatedMessage = message;
+  for (const preset of userPresets) {
+    const regex = new RegExp(
+      `(?:\\b\\s|^)(${preset.command})(?:\\b\\s|$)`,
+      "g"
+    );
+    updatedMessage = updatedMessage.replace(regex, preset.prompt);
+  }
+
+  return updatedMessage;
+}
+
+/**
+ * @description This function will do recursive replacement of all slash commands with their corresponding prompts.
+ * @notice This function is used for API calls and is not user-scoped. THIS FUNCTION DOES NOT SUPPORT PRESET COMMANDS.
+ * @returns {Promise<string>}
+ */
+async function grepAllSlashCommands(message) {
+  const allPresets = await SlashCommandPresets.where({});
+
+  // Replace all preset commands with their corresponding prompts
+  // Allows multiple commands in one message
+  let updatedMessage = message;
+  for (const preset of allPresets) {
+    const regex = new RegExp(
+      `(?:\\b\\s|^)(${preset.command})(?:\\b\\s|$)`,
+      "g"
+    );
+    updatedMessage = updatedMessage.replace(regex, preset.prompt);
+  }
+
+  return updatedMessage;
+}
+
+async function recentChatHistory({
+  user = null,
+  workspace,
+  thread = null,
+  messageLimit = 20,
+  apiSessionId = null,
+}) {
+  const rawHistory = (
+    await WorkspaceChats.where(
+      {
+        workspaceId: workspace.id,
+        user_id: user?.id || null,
+        thread_id: thread?.id || null,
+        api_session_id: apiSessionId || null,
+        include: true,
+      },
+      messageLimit,
+      { id: "desc" }
+    )
+  ).reverse();
+  return { rawHistory, chatHistory: convertToPromptHistory(rawHistory) };
+}
+
+/**
+ * Returns the base prompt for the chat. This method will also do variable
+ * substitution on the prompt if there are any defined variables in the prompt.
+ * This version instructs the LLM to ask 3 clarifying questions instead of answering directly.
+ * @param {Object|null} workspace - the workspace object (used to check if a custom prompt is set, though the new behavior overrides it)
+ * @param {Object|null} user - the user object (for variable expansion)
+ * @returns {Promise<string>} - the system prompt that instructs the LLM to ask 3 questions.
+ */
 async function chatPrompt(workspace, user = null) {
   // Define the expert persona and core instructions
   const personaInstructions = `You are an expert senior software engineer specializing in the development of Gravity Forms itself and its extensive ecosystem of add-ons. You have a deep understanding of its internal architecture, hooks, filters, APIs, and best practices for extending its functionality. Your advice reflects this core developer perspective, emphasizing robust, maintainable, and performant solutions.
@@ -10,7 +101,7 @@ IMPORTANT CONSTRAINTS:
 3.  If the provided context is insufficient to give a definitive, non-hypothetical answer, or if the user's question is ambiguous, clearly state what information is missing and ask clarifying questions. Do not attempt to answer if you lack the necessary details.`;
 
   // Use the workspace prompt if available, otherwise use the new persona instructions
-  const basePrompt = personaInstructions; //workspace?.openAiPrompt ?? personaInstructions;
+  const basePrompt = personaInstructions;
 
   const metadataInstructions = `\n\n---
 CONTEXT & METADATA INSTRUCTIONS:
@@ -53,3 +144,22 @@ When answering, pay close attention to ALL the metadata provided with each conte
     user?.id
   );
 }
+
+// We use this util function to deduplicate sources from similarity searching
+// if the document is already pinned.
+// Eg: You pin a csv, if we RAG + full-text that you will get the same data
+// points both in the full-text and possibly from RAG - result in bad results
+// even if the LLM was not even going to hallucinate.
+function sourceIdentifier(sourceDocument) {
+  if (!sourceDocument?.title || !sourceDocument?.published) return uuidv4();
+  return `title:${sourceDocument.title}-timestamp:${sourceDocument.published}`;
+}
+
+module.exports = {
+  sourceIdentifier,
+  recentChatHistory,
+  chatPrompt,
+  grepCommand,
+  grepAllSlashCommands,
+  VALID_COMMANDS,
+};

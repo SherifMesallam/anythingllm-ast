@@ -85,7 +85,7 @@ class AnthropicLLM {
     if (!contextDocuments || !contextDocuments.length) return "";
 
     const includeMetadata = !userPrompt.includes('[nometa]');
-    this.log(`#appendContext: Metadata inclusion flag '[nometa]' ${includeMetadata ? 'not found' : 'found'}. Including metadata: ${includeMetadata}`);
+    //this.log(`#appendContext: Metadata inclusion flag '[nometa]' ${includeMetadata ? 'not found' : 'found'}. Including metadata: ${includeMetadata}`);
 
     // Start with the main context heading
     let fullContextString = "\nContext:\n";
@@ -96,8 +96,8 @@ class AnthropicLLM {
         .map((doc, i) => {
           const text = doc.text || doc.pageContent || ""; // Get the text content
           const metadata = doc.metadata || doc; // Metadata might be top-level or nested
-  
-          // --- Extract Existing and New Metadata --- 
+
+          // --- Extract Existing and New Metadata ---
           const relevantMeta = {
             file: metadata.filePath || metadata.title || metadata.filename || metadata.source || 'Unknown',
             type: metadata.nodeType || (text.length > 0 ? 'Text' : 'Metadata'),
@@ -123,12 +123,12 @@ class AnthropicLLM {
             atRuleName: metadata.atRuleName || null,
             atRuleParams: metadata.atRuleParams || null,
             // Add PHP/other specific fields if needed based on TextSplitter capabilities
-            extendsClass: metadata.extendsClass || null, 
-            implementsInterfaces: metadata.implementsInterfaces || null, 
-            usesTraits: metadata.usesTraits || null, 
+            extendsClass: metadata.extendsClass || null,
+            implementsInterfaces: metadata.implementsInterfaces || null,
+            usesTraits: metadata.usesTraits || null,
           };
           // --- End Metadata Extraction ---
-          
+
           // -- Safely parse JSON string fields --
           let parsedParameters = [];
           let parsedModifiers = {};
@@ -136,7 +136,7 @@ class AnthropicLLM {
           let parsedUsesTraits = [];
           let parsedRegistersHooks = [];
           let parsedTriggersHooks = [];
-  
+
           try { parsedParameters = relevantMeta.parameters ? JSON.parse(relevantMeta.parameters) : []; } catch (e) { console.error(`[Anthropic Context] Failed to parse parameters: ${relevantMeta.parameters}`, e); }
           try { parsedModifiers = relevantMeta.modifiers ? JSON.parse(relevantMeta.modifiers) : {}; } catch (e) { console.error(`[Anthropic Context] Failed to parse modifiers: ${relevantMeta.modifiers}`, e); }
           try { parsedImplementsInterfaces = relevantMeta.implementsInterfaces ? JSON.parse(relevantMeta.implementsInterfaces) : []; } catch (e) { console.error(`[Anthropic Context] Failed to parse implementsInterfaces: ${relevantMeta.implementsInterfaces}`, e); }
@@ -144,14 +144,14 @@ class AnthropicLLM {
           try { parsedRegistersHooks = relevantMeta.registersHooks ? JSON.parse(relevantMeta.registersHooks) : []; } catch (e) { console.error(`[Anthropic Context] Failed to parse registersHooks: ${relevantMeta.registersHooks}`, e); }
           try { parsedTriggersHooks = relevantMeta.triggersHooks ? JSON.parse(relevantMeta.triggersHooks) : []; } catch (e) { console.error(`[Anthropic Context] Failed to parse triggersHooks: ${relevantMeta.triggersHooks}`, e); }
           // -- End Parsing --
-  
+
           // --- Build the formatted string for this chunk ---
           let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
           formattedChunk += `Source File: ${relevantMeta.file}\n`;
           if (relevantMeta.language) formattedChunk += `Language: ${relevantMeta.language}\n`;
           if (relevantMeta.featureContext) formattedChunk += `Feature Context: ${relevantMeta.featureContext}\n`;
           if (relevantMeta.type) formattedChunk += `Element Type: ${relevantMeta.type}\n`;
-  
+
           // Specific CSS Formatting
           if (relevantMeta.language === 'css') {
               if (relevantMeta.type === 'rule' && relevantMeta.selector) {
@@ -160,28 +160,28 @@ class AnthropicLLM {
                    const paramsStr = relevantMeta.atRuleParams ? ` ${relevantMeta.atRuleParams}` : '';
                    formattedChunk += `CSS At-Rule: @${relevantMeta.atRuleName}${paramsStr}\n`;
               }
-          } 
+          }
           // Generic/Other Language Formatting
           else {
               if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
               if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
               if (parsedModifiers.visibility) formattedChunk += `Visibility: ${parsedModifiers.visibility}\n`;
           }
-          
+
           if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
-  
+
           // --- Resume formatting for fields common to all or already handled ----
           const modifierFlags = [];
           if (parsedModifiers.isStatic) modifierFlags.push('static');
           if (parsedModifiers.isAbstract) modifierFlags.push('abstract');
           if (parsedModifiers.isFinal) modifierFlags.push('final');
-          if (parsedModifiers.isAsync) modifierFlags.push('async'); 
+          if (parsedModifiers.isAsync) modifierFlags.push('async');
           if (modifierFlags.length > 0 && relevantMeta.language !== 'css') formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`;
-  
+
           if (relevantMeta.isDeprecated && relevantMeta.language !== 'css') formattedChunk += `Deprecated: Yes\n`;
-  
+
           if (relevantMeta.summary && relevantMeta.language !== 'css') formattedChunk += `Summary: ${relevantMeta.summary}\n`;
-  
+
           if (parsedParameters && parsedParameters.length > 0 && relevantMeta.language !== 'css') {
              formattedChunk += `Parameters:\n`;
              parsedParameters.forEach(p => {
@@ -189,27 +189,27 @@ class AnthropicLLM {
                  const descStr = p.description ? ` - ${p.description}` : '';
                  formattedChunk += `  - ${p.name}${typeStr}${descStr}\n`;
              });
-          } 
-  
+          }
+
           if (relevantMeta.returnType && relevantMeta.language !== 'css') {
               const descStr = relevantMeta.returnDescription ? ` - ${relevantMeta.returnDescription}` : '';
               formattedChunk += `Returns: ${relevantMeta.returnType}${descStr}\n`;
-          } 
-  
+          }
+
            if (parsedRegistersHooks && parsedRegistersHooks.length > 0 && relevantMeta.language === 'php') {
              formattedChunk += `Registers Hooks:\n`;
              parsedRegistersHooks.forEach(h => {
                  formattedChunk += `  - [${h.type}] ${h.hookName} -> ${h.callback} (P:${h.priority}, A:${h.acceptedArgs})\n`;
              });
-          } 
-  
+          }
+
           if (parsedTriggersHooks && parsedTriggersHooks.length > 0 && relevantMeta.language === 'php') {
               formattedChunk += `Triggers Hooks:\n`;
               parsedTriggersHooks.forEach(h => {
                   formattedChunk += `  - [${h.type}] ${h.hookName}\n`;
               });
-          } 
-  
+          }
+
           if (relevantMeta.extendsClass && relevantMeta.language === 'php') {
               formattedChunk += `Extends: ${relevantMeta.extendsClass}\n`;
           }
@@ -219,14 +219,14 @@ class AnthropicLLM {
           if (parsedUsesTraits && parsedUsesTraits.length > 0 && relevantMeta.language === 'php') {
               formattedChunk += `Uses Traits: ${parsedUsesTraits.join(', ')}\n`;
           }
-  
+
           if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
-          
+
           const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
-          
+
           formattedChunk += `--- Code/Text ---\n${cleanedText}\n`;
-          formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`; 
-  
+          formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`;
+
           return formattedChunk;
         })
         .join("");
@@ -245,7 +245,7 @@ class AnthropicLLM {
       // --- END SIMPLE FORMATTING ---
     }
 
-    this.log("#appendContext: Generated formatted context string."); // Simplified log message
+    //this.log("#appendContext: Generated formatted context string."); // Simplified log message
     return fullContextString;
   }
 
@@ -260,8 +260,8 @@ class AnthropicLLM {
     const formattedContext = this.#appendContext(contextDocuments, userPrompt);
 
     // Check and remove the flag from the userPrompt before using it
-    const finalUserPrompt = userPrompt.includes('[nometa]') 
-                             ? userPrompt.replace('[nometa]', '').trim() 
+    const finalUserPrompt = userPrompt.includes('[nometa]')
+                             ? userPrompt.replace('[nometa]', '').trim()
                              : userPrompt;
 
     const prompt = {

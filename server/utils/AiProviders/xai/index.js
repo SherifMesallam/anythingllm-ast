@@ -39,7 +39,7 @@ class XAiLLM {
     if (!contextDocuments || !contextDocuments.length) return "";
 
     const includeMetadata = !userPrompt.includes('[nometa]');
-    this.log(`#appendContext: Metadata inclusion flag '[nometa]' ${includeMetadata ? 'not found' : 'found'}. Including metadata: ${includeMetadata}`);
+    //this.log(`#appendContext: Metadata inclusion flag '[nometa]' ${includeMetadata ? 'not found' : 'found'}. Including metadata: ${includeMetadata}`);
 
     let fullContextString = "\nContext:\n";
 
@@ -48,7 +48,7 @@ class XAiLLM {
         .map((doc, i) => {
           const text = doc.text || doc.pageContent || "";
           const metadata = doc.metadata || doc;
-          
+
           let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
           if (metadata.title) formattedChunk += `Title: ${metadata.title}\n`;
           if (metadata.docSource) formattedChunk += `Source: ${metadata.docSource}\n`;

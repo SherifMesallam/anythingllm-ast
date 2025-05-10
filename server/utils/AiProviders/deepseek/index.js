@@ -40,7 +40,7 @@ class DeepSeekLLM {
     if (!contextDocuments || !contextDocuments.length) return "";
 
     const includeMetadata = !userPrompt.includes('[nometa]');
-    this.log(`#appendContext: Metadata inclusion flag '[nometa]' ${includeMetadata ? 'not found' : 'found'}. Including metadata: ${includeMetadata}`);
+    //this.log(`#appendContext: Metadata inclusion flag '[nometa]' ${includeMetadata ? 'not found' : 'found'}. Including metadata: ${includeMetadata}`);
 
     let fullContextString = "\nContext:\n";
 
@@ -74,11 +74,11 @@ class DeepSeekLLM {
             selector: metadata.selector || null,
             atRuleName: metadata.atRuleName || null,
             atRuleParams: metadata.atRuleParams || null,
-            extendsClass: metadata.extendsClass || null, 
-            implementsInterfaces: metadata.implementsInterfaces || null, 
-            usesTraits: metadata.usesTraits || null, 
+            extendsClass: metadata.extendsClass || null,
+            implementsInterfaces: metadata.implementsInterfaces || null,
+            usesTraits: metadata.usesTraits || null,
           };
-          
+
           let parsedParameters = [];
           let parsedModifiers = {};
           let parsedImplementsInterfaces = [];
@@ -92,7 +92,7 @@ class DeepSeekLLM {
           try { parsedUsesTraits = relevantMeta.usesTraits ? JSON.parse(relevantMeta.usesTraits) : []; } catch (e) { console.error(`[DeepSeek Context] Failed to parse usesTraits: ${relevantMeta.usesTraits}`, e); }
           try { parsedRegistersHooks = relevantMeta.registersHooks ? JSON.parse(relevantMeta.registersHooks) : []; } catch (e) { console.error(`[DeepSeek Context] Failed to parse registersHooks: ${relevantMeta.registersHooks}`, e); }
           try { parsedTriggersHooks = relevantMeta.triggersHooks ? JSON.parse(relevantMeta.triggersHooks) : []; } catch (e) { console.error(`[DeepSeek Context] Failed to parse triggersHooks: ${relevantMeta.triggersHooks}`, e); }
-          
+
           let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
           formattedChunk += `Source File: ${relevantMeta.file}\n`;
           if (relevantMeta.language) formattedChunk += `Language: ${relevantMeta.language}\n`;
@@ -106,20 +106,20 @@ class DeepSeekLLM {
                    const paramsStr = relevantMeta.atRuleParams ? ` ${relevantMeta.atRuleParams}` : '';
                    formattedChunk += `CSS At-Rule: @${relevantMeta.atRuleName}${paramsStr}\n`;
               }
-          } 
+          }
           else {
               if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
               if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
               if (parsedModifiers.visibility) formattedChunk += `Visibility: ${parsedModifiers.visibility}\n`;
           }
-          
+
           if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
 
           const modifierFlags = [];
           if (parsedModifiers.isStatic) modifierFlags.push('static');
           if (parsedModifiers.isAbstract) modifierFlags.push('abstract');
           if (parsedModifiers.isFinal) modifierFlags.push('final');
-          if (parsedModifiers.isAsync) modifierFlags.push('async'); 
+          if (parsedModifiers.isAsync) modifierFlags.push('async');
           if (modifierFlags.length > 0 && relevantMeta.language !== 'css') formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`;
 
           if (relevantMeta.isDeprecated && relevantMeta.language !== 'css') formattedChunk += `Deprecated: Yes\n`;
@@ -133,26 +133,26 @@ class DeepSeekLLM {
                  const descStr = p.description ? ` - ${p.description}` : '';
                  formattedChunk += `  - ${p.name}${typeStr}${descStr}\n`;
              });
-          } 
+          }
 
           if (relevantMeta.returnType && relevantMeta.language !== 'css') {
               const descStr = relevantMeta.returnDescription ? ` - ${relevantMeta.returnDescription}` : '';
               formattedChunk += `Returns: ${relevantMeta.returnType}${descStr}\n`;
-          } 
+          }
 
            if (parsedRegistersHooks && parsedRegistersHooks.length > 0 && relevantMeta.language === 'php') {
              formattedChunk += `Registers Hooks:\n`;
              parsedRegistersHooks.forEach(h => {
                  formattedChunk += `  - [${h.type}] ${h.hookName} -> ${h.callback} (P:${h.priority}, A:${h.acceptedArgs})\n`;
              });
-          } 
+          }
 
           if (parsedTriggersHooks && parsedTriggersHooks.length > 0 && relevantMeta.language === 'php') {
               formattedChunk += `Triggers Hooks:\n`;
               parsedTriggersHooks.forEach(h => {
                   formattedChunk += `  - [${h.type}] ${h.hookName}\n`;
               });
-          } 
+          }
 
           if (relevantMeta.extendsClass && relevantMeta.language === 'php') {
               formattedChunk += `Extends: ${relevantMeta.extendsClass}\n`;
@@ -165,11 +165,11 @@ class DeepSeekLLM {
           }
 
           if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
-          
+
           const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
-          
+
           formattedChunk += `--- Code/Text ---\n${cleanedText}\n`;
-          formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`; 
+          formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`;
 
           return formattedChunk;
         })
@@ -186,7 +186,7 @@ class DeepSeekLLM {
         .join("");
     }
 
-    this.log("#appendContext: Generated formatted context string.");
+    //this.log("#appendContext: Generated formatted context string.");
     return fullContextString;
   }
 
@@ -215,10 +215,10 @@ class DeepSeekLLM {
   }) {
     const formattedContext = this.#appendContext(contextDocuments, userPrompt);
 
-    const finalUserPrompt = userPrompt.includes('[nometa]') 
-                             ? userPrompt.replace('[nometa]', '').trim() 
+    const finalUserPrompt = userPrompt.includes('[nometa]')
+                             ? userPrompt.replace('[nometa]', '').trim()
                              : userPrompt;
-    
+
     const prompt = {
       role: "system",
       content: `${systemPrompt}${formattedContext}`,

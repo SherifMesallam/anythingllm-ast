@@ -43,7 +43,6 @@ class OpenAiLLM {
     if (!contextDocuments || !contextDocuments.length) return "";
 
     const includeMetadata = !userPrompt.includes('[nometa]');
-    this.log(`#appendContext: Metadata inclusion flag '[nometa]' ${includeMetadata ? 'not found' : 'found'}. Including metadata: ${includeMetadata}`);
 
     // Start with the main context heading
     let fullContextString = "\nContext:\n";
@@ -54,8 +53,8 @@ class OpenAiLLM {
         .map((doc, i) => {
           const text = doc.text || doc.pageContent || ""; // Get the text content
           const metadata = doc.metadata || doc; // Metadata might be top-level or nested
-  
-          // --- Extract Existing and New Metadata --- 
+
+          // --- Extract Existing and New Metadata ---
           const relevantMeta = {
             file: metadata.filePath || metadata.title || metadata.filename || metadata.source || 'Unknown',
             type: metadata.nodeType || (text.length > 0 ? 'Text' : 'Metadata'),
@@ -81,12 +80,12 @@ class OpenAiLLM {
             atRuleName: metadata.atRuleName || null,
             atRuleParams: metadata.atRuleParams || null,
             // Add PHP/other specific fields if needed based on TextSplitter capabilities
-            extendsClass: metadata.extendsClass || null, 
-            implementsInterfaces: metadata.implementsInterfaces || null, 
-            usesTraits: metadata.usesTraits || null, 
+            extendsClass: metadata.extendsClass || null,
+            implementsInterfaces: metadata.implementsInterfaces || null,
+            usesTraits: metadata.usesTraits || null,
           };
           // --- End Metadata Extraction ---
-          
+
           // -- Safely parse JSON string fields --
           let parsedParameters = [];
           let parsedModifiers = {};
@@ -94,7 +93,7 @@ class OpenAiLLM {
           let parsedUsesTraits = [];
           let parsedRegistersHooks = [];
           let parsedTriggersHooks = [];
-  
+
           try { parsedParameters = relevantMeta.parameters ? JSON.parse(relevantMeta.parameters) : []; } catch (e) { console.error(`[OpenAI Context] Failed to parse parameters: ${relevantMeta.parameters}`, e); }
           try { parsedModifiers = relevantMeta.modifiers ? JSON.parse(relevantMeta.modifiers) : {}; } catch (e) { console.error(`[OpenAI Context] Failed to parse modifiers: ${relevantMeta.modifiers}`, e); }
           try { parsedImplementsInterfaces = relevantMeta.implementsInterfaces ? JSON.parse(relevantMeta.implementsInterfaces) : []; } catch (e) { console.error(`[OpenAI Context] Failed to parse implementsInterfaces: ${relevantMeta.implementsInterfaces}`, e); }
@@ -102,14 +101,14 @@ class OpenAiLLM {
           try { parsedRegistersHooks = relevantMeta.registersHooks ? JSON.parse(relevantMeta.registersHooks) : []; } catch (e) { console.error(`[OpenAI Context] Failed to parse registersHooks: ${relevantMeta.registersHooks}`, e); }
           try { parsedTriggersHooks = relevantMeta.triggersHooks ? JSON.parse(relevantMeta.triggersHooks) : []; } catch (e) { console.error(`[OpenAI Context] Failed to parse triggersHooks: ${relevantMeta.triggersHooks}`, e); }
           // -- End Parsing --
-  
+
           // --- Build the formatted string for this chunk ---
           let formattedChunk = `--- Context Chunk ${i + 1} ---\n`;
           formattedChunk += `Source File: ${relevantMeta.file}\n`;
           if (relevantMeta.language) formattedChunk += `Language: ${relevantMeta.language}\n`;
           if (relevantMeta.featureContext) formattedChunk += `Feature Context: ${relevantMeta.featureContext}\n`;
           if (relevantMeta.type) formattedChunk += `Element Type: ${relevantMeta.type}\n`;
-  
+
           // Specific CSS Formatting
           if (relevantMeta.language === 'css') {
               if (relevantMeta.type === 'rule' && relevantMeta.selector) {
@@ -118,28 +117,28 @@ class OpenAiLLM {
                    const paramsStr = relevantMeta.atRuleParams ? ` ${relevantMeta.atRuleParams}` : '';
                    formattedChunk += `CSS At-Rule: @${relevantMeta.atRuleName}${paramsStr}\n`;
               }
-          } 
+          }
           // Generic/Other Language Formatting
           else {
               if (relevantMeta.name) formattedChunk += `Element Name: ${relevantMeta.name}\n`;
               if (relevantMeta.parent) formattedChunk += `Parent Context: ${relevantMeta.parent}\n`;
               if (parsedModifiers.visibility) formattedChunk += `Visibility: ${parsedModifiers.visibility}\n`;
           }
-          
+
           if (relevantMeta.lines) formattedChunk += `Lines: ${relevantMeta.lines}\n`;
-  
+
           // --- Resume formatting for fields common to all or already handled ----
           const modifierFlags = [];
           if (parsedModifiers.isStatic) modifierFlags.push('static');
           if (parsedModifiers.isAbstract) modifierFlags.push('abstract');
           if (parsedModifiers.isFinal) modifierFlags.push('final');
-          if (parsedModifiers.isAsync) modifierFlags.push('async'); 
+          if (parsedModifiers.isAsync) modifierFlags.push('async');
           if (modifierFlags.length > 0 && relevantMeta.language !== 'css') formattedChunk += `Modifiers: ${modifierFlags.join(', ')}\n`;
-  
+
           if (relevantMeta.isDeprecated && relevantMeta.language !== 'css') formattedChunk += `Deprecated: Yes\n`;
-  
+
           if (relevantMeta.summary && relevantMeta.language !== 'css') formattedChunk += `Summary: ${relevantMeta.summary}\n`;
-  
+
           if (parsedParameters && parsedParameters.length > 0 && relevantMeta.language !== 'css') {
              formattedChunk += `Parameters:\n`;
              parsedParameters.forEach(p => {
@@ -147,27 +146,27 @@ class OpenAiLLM {
                  const descStr = p.description ? ` - ${p.description}` : '';
                  formattedChunk += `  - ${p.name}${typeStr}${descStr}\n`;
              });
-          } 
-  
+          }
+
           if (relevantMeta.returnType && relevantMeta.language !== 'css') {
               const descStr = relevantMeta.returnDescription ? ` - ${relevantMeta.returnDescription}` : '';
               formattedChunk += `Returns: ${relevantMeta.returnType}${descStr}\n`;
-          } 
-  
+          }
+
            if (parsedRegistersHooks && parsedRegistersHooks.length > 0 && relevantMeta.language === 'php') {
              formattedChunk += `Registers Hooks:\n`;
              parsedRegistersHooks.forEach(h => {
                  formattedChunk += `  - [${h.type}] ${h.hookName} -> ${h.callback} (P:${h.priority}, A:${h.acceptedArgs})\n`;
              });
-          } 
-  
+          }
+
           if (parsedTriggersHooks && parsedTriggersHooks.length > 0 && relevantMeta.language === 'php') {
               formattedChunk += `Triggers Hooks:\n`;
               parsedTriggersHooks.forEach(h => {
                   formattedChunk += `  - [${h.type}] ${h.hookName}\n`;
               });
-          } 
-  
+          }
+
           if (relevantMeta.extendsClass && relevantMeta.language === 'php') {
               formattedChunk += `Extends: ${relevantMeta.extendsClass}\n`;
           }
@@ -177,14 +176,14 @@ class OpenAiLLM {
           if (parsedUsesTraits && parsedUsesTraits.length > 0 && relevantMeta.language === 'php') {
               formattedChunk += `Uses Traits: ${parsedUsesTraits.join(', ')}\n`;
           }
-  
+
           if (relevantMeta.score) formattedChunk += `Relevance Score: ${relevantMeta.score}\n`;
-          
+
           const cleanedText = text.replace(/<document_metadata>[\s\S]*?<\/document_metadata>\n*\n*/, '');
-          
+
           formattedChunk += `--- Code/Text ---\n${cleanedText}\n`;
-          formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`; 
-  
+          formattedChunk += `--- End Context Chunk ${i + 1} ---\n\n`;
+
           return formattedChunk;
         })
         .join("");
@@ -203,7 +202,6 @@ class OpenAiLLM {
       // --- END SIMPLE FORMATTING ---
     }
 
-    this.log("#appendContext: Generated formatted context string."); // Simplified log message
     return fullContextString;
   }
 
@@ -280,8 +278,8 @@ class OpenAiLLM {
     const role = this.isOTypeModel ? "user" : "system";
 
     // Check and remove the flag from the userPrompt before using it
-    const finalUserPrompt = userPrompt.includes('[nometa]') 
-                             ? userPrompt.replace('[nometa]', '').trim() 
+    const finalUserPrompt = userPrompt.includes('[nometa]')
+                             ? userPrompt.replace('[nometa]', '').trim()
                              : userPrompt;
 
     // Original Logic: Append context to the system prompt content.
@@ -306,14 +304,14 @@ class OpenAiLLM {
       role: "user",
       content: this.#generateContent({ userPrompt: finalUserPrompt, attachments }),
     });
-    
+
     // Logging added previously...
     console.log("\x1b[34m[LLM_REQUEST_PREP] [0m [OpenAI - constructPrompt Final Messages]");
     try {
       // Use JSON.stringify for clear structure, handle potential circular refs/BigInts if necessary
-      console.log(JSON.stringify(finalMessages, (key, value) => 
+      console.log(JSON.stringify(finalMessages, (key, value) =>
         typeof value === 'bigint' ? value.toString() : value, // Basic BigInt handler
-      2)); 
+      2));
     } catch (e) {
       console.error("  [DEBUG] OpenAI constructPrompt: Error stringifying finalMessages for logging:", e);
       console.log("  [DEBUG] OpenAI constructPrompt: finalMessages raw object:", finalMessages); // Fallback log
@@ -334,8 +332,8 @@ class OpenAiLLM {
     // --- BEGIN ADDED LOGGING (BEFORE API CALL) ---
     console.log(`\x1b[35m[API_CALL_PREP] [OpenAI - getChatCompletion] Sending ${messages?.length} messages to model ${this.model}:\x1b[0m`);
     try {
-      console.log(JSON.stringify(messages, (key, value) => 
-        typeof value === 'bigint' ? value.toString() : value, 
+      console.log(JSON.stringify(messages, (key, value) =>
+        typeof value === 'bigint' ? value.toString() : value,
       2));
     } catch (e) {
       console.error("  [API_CALL_PREP] OpenAI getChatCompletion: Error stringifying messages for logging:", e);
@@ -385,8 +383,8 @@ class OpenAiLLM {
     // --- BEGIN ADDED LOGGING (BEFORE API CALL) ---
     console.log(`\x1b[35m[API_CALL_PREP] [OpenAI - streamGetChatCompletion] Sending ${messages?.length} messages to model ${this.model}:\x1b[0m`);
     try {
-      console.log(JSON.stringify(messages, (key, value) => 
-        typeof value === 'bigint' ? value.toString() : value, 
+      console.log(JSON.stringify(messages, (key, value) =>
+        typeof value === 'bigint' ? value.toString() : value,
       2));
     } catch (e) {
       console.error("  [API_CALL_PREP] OpenAI streamGetChatCompletion: Error stringifying messages for logging:", e);
@@ -427,23 +425,23 @@ class OpenAiLLM {
     let compressedMessages; // Declare compressedMessages here
     try {
       const { messageArrayCompressor } = require("../../helpers/chat");
-      
+
       // --- BEGIN SIMPLIFIED LOGGING ---
       console.log("\x1b[36m[DEBUG] OpenAiLLM.compressMessages: Entered function.\x1b[0m");
       console.log(`\x1b[36m[DEBUG] OpenAiLLM.compressMessages: Received contextDocuments count: ${promptArgs?.contextDocuments?.length ?? 'undefined'}\x1b[0m`);
       // --- END SIMPLIFIED LOGGING ---
-  
+
       messageArray = this.constructPrompt(promptArgs);
-  
+
       // --- BEGIN SIMPLIFIED LOGGING ---
       console.log(`\x1b[36m[DEBUG] OpenAiLLM.compressMessages: Message array length BEFORE compression: ${messageArray?.length ?? 'undefined'}\x1b[0m`);
       console.log(`\x1b[36m[DEBUG] OpenAiLLM.compressMessages: Calling messageArrayCompressor...\x1b[0m`);
       // --- END SIMPLIFIED LOGGING ---
-      
+
       // Call the compressor
       // Now assigns to the outer variable
       compressedMessages = await messageArrayCompressor(this, messageArray, rawHistory);
-  
+
       // --- BEGIN ADDED LOGGING (AFTER COMPRESSION) ---
       console.log("\x1b[36m[DEBUG] OpenAiLLM.compressMessages: Message array AFTER compression:\x1b[0m");
       try {
@@ -466,18 +464,18 @@ class OpenAiLLM {
       console.error("Error message:", compressError?.message);
       // console.error("\x1b[31m[ERROR] OpenAiLLM.compressMessages: Failed during initial processing or logging!\x1b[0m", compressError); // Original complex log
       // --- END SIMPLIFIED ERROR LOGGING ---
-      
+
       // Fallback: If compression fails, just return the original constructed prompt
       // This might be too large, but it's better than crashing.
       // Ensure messageArray is defined in this scope if an error happened before its assignment
-      if (typeof messageArray === 'undefined') { 
+      if (typeof messageArray === 'undefined') {
         console.error("--- ERROR: messageArray was undefined during error handling in OpenAiLLM.compressMessages ---");
         // Attempt to reconstruct or return a minimal error state if possible
          messageArray = this.constructPrompt(promptArgs); // Try constructing again, might fail if args are bad
          if (!messageArray) return [{ role: 'user', content: promptArgs?.userPrompt || "Error during prompt compression." }];
       }
       // Now assigns to the outer variable
-      compressedMessages = messageArray; 
+      compressedMessages = messageArray;
     }
 
     return compressedMessages; // Returns the outer variable
