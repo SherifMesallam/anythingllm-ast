@@ -1098,6 +1098,13 @@ function apiWorkspaceEndpoints(app) {
         const LLMConnector = getLLMProvider();
         const queryVector = await LLMConnector.embedTextInput(String(query));
         
+        // Define the parseTopN function at this level so it's available for later use
+        const parseTopN = () => {
+          let input = Number(topN);
+          if (isNaN(input) || input < 1) return 4; // Default to 4 if no workspace-specific value
+          return input;
+        };
+        
         // Search across all workspaces
         const allResults = [];
         for (const workspace of filteredWorkspaces) {
@@ -1113,7 +1120,8 @@ function apiWorkspaceEndpoints(app) {
             return input;
           };
 
-          const parseTopN = () => {
+          // This parseTopN function is workspace-specific and only used within the loop
+          const workspaceParseTopN = () => {
             let input = Number(topN);
             if (isNaN(input) || input < 1) return workspace?.topN ?? 4;
             return input;
@@ -1124,7 +1132,7 @@ function apiWorkspaceEndpoints(app) {
             input: String(query),
             LLMConnector,
             similarityThreshold: parseSimilarityThreshold(),
-            topN: parseTopN(),
+            topN: workspaceParseTopN(),
             rerank: workspace?.vectorSearchMode === "rerank",
           });
 
