@@ -92,6 +92,7 @@ async function recentChatHistory({
  * @returns {Promise<string>} Fully-expanded system prompt.
  */
 async function chatPrompt( workspace, user = null ) {
+  
 
 	/* -----------------------------------------------------------------
 	 * 1. Expert Persona & Core Constraints
@@ -103,52 +104,13 @@ You know every hook, filter, REST endpoint and performance pitfall.
 Answer in the voice of an experienced Rocketgenius developer: concise, authoritative, pragmatic.
 
 IMPORTANT CONSTRAINTS  
-1. Never refer to “Context Chunk 1”, “Chunk 2”, etc.  Blend the information naturally.  
+1. Never refer to "Context Chunk 1", "Chunk 2", etc.  Blend the information naturally.  
 2. Ground your answers ONLY in the supplied context plus your Gravity-Forms expertise—no guessing.  
 3. If information is missing or the question is ambiguous, identify what is missing and ask clarifying questions—do NOT fabricate.  
 `;
 
 	/* -----------------------------------------------------------------
-	 * 2. Tool-Use Policy (function calling)
-	 * -----------------------------------------------------------------*/
-	const toolUseInstructions = `
---- TOOL-USE POLICY --------------------------------------------------------
-You can request execution of predefined tools when additional data would
-materially improve your answer.
-
-Available tools (initial set):
-1. get_file_content
-   • description: Fetch the full source code of a file given its relative path.
-   • parameters:
-       {
-         "type": "object",
-         "properties": {
-           "path": {
-             "type": "string",
-             "description": "Relative path to the file you need in order to answer."
-           }
-         },
-         "required": ["path"]
-       }
-
-Usage protocol:
-A. When you detect that the provided context is partial or references external
-   code you need to inspect, respond with a JSON payload ONLY:
-   {
-     "function_call": {
-       "name": "<tool-name>",
-       "arguments": { ... }
-     }
-   }
-B. The back-end will run the tool, append its result as a new message, and
-   re-prompt you. Continue reasoning with the new information until you can
-   deliver a complete answer.
-
-If no tool is required, answer normally.
---------------------------------------------------------------------------`;
-
-	/* -----------------------------------------------------------------
-	 * 3. Context-Chunk Interpretation Rules
+	 * 2. Context-Chunk Interpretation Rules
 	 * -----------------------------------------------------------------*/
 	const metadataInstructions = `
 --- CONTEXT & METADATA INSTRUCTIONS ---------------------------------------
@@ -180,12 +142,21 @@ Prefer higher relevance-score chunks when synthesising your answer.
 -------------------------------------------------------------------------`;
 
 	/* -----------------------------------------------------------------
-	 * 4. Assemble & Expand Variables
+	 * 3. Assemble & Expand Variables
 	 * -----------------------------------------------------------------*/
-	const promptWithInstructions =
-		personaInstructions +
-		toolUseInstructions +
-		metadataInstructions;
+	let promptWithInstructions = personaInstructions + metadataInstructions;
+
+	// Append workspace prompt with emphasis for specific workspaces
+	if (workspace?.slug === "github" || workspace?.slug === "formatter") {
+		if (workspace?.openAiPrompt) {
+			promptWithInstructions += `
+			
+--- IMPORTANT WORKSPACE-SPECIFIC INSTRUCTIONS ---
+${workspace.openAiPrompt}
+--- END WORKSPACE-SPECIFIC INSTRUCTIONS ---
+`;
+		}
+	}
 
 	return await SystemPromptVariables.expandSystemPromptVariables(
 		promptWithInstructions,
