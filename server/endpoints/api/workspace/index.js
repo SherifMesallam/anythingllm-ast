@@ -1094,73 +1094,100 @@ function apiWorkspaceEndpoints(app) {
             message: "No valid workspaces found.",
           });
 
-        const VectorDb = getVectorDbClass();
-        const LLMConnector = getLLMProvider();
-        const queryVector = await LLMConnector.embedTextInput(String(query));
-        
-        // Define the parseTopN function at this level so it's available for later use
+        // Define the parseTopN function for later use
         const parseTopN = () => {
           let input = Number(topN);
-          if (isNaN(input) || input < 1) return 4; // Default to 4 if no workspace-specific value
+          if (isNaN(input) || input < 1) return 4;
           return input;
         };
-        
-        // Search across all workspaces
-        const allResults = [];
-        for (const workspace of filteredWorkspaces) {
-          const hasVectorizedSpace = await VectorDb.hasNamespace(workspace.slug);
-          const embeddingsCount = await VectorDb.namespaceCount(workspace.slug);
 
-          if (!hasVectorizedSpace || embeddingsCount === 0) continue;
+        // The default similarity threshold if not specified
+        const defaultSimilarityThreshold = () => {
+          let input = parseFloat(scoreThreshold);
+          if (isNaN(input) || input < 0 || input > 1) return 0.25;
+          return input;
+        };
 
-          const parseSimilarityThreshold = () => {
-            let input = parseFloat(scoreThreshold);
-            if (isNaN(input) || input < 0 || input > 1)
-              return workspace?.similarityThreshold ?? 0.25;
-            return input;
-          };
+        // Helper function to search across workspaces
+        async function searchAcrossWorkspaces(
+          workspaces,
+          searchQuery,
+          queryVector,
+          similarityThresholdValue,
+          topNValue
+        ) {
+          const VectorDb = getVectorDbClass();
+          const allResults = [];
 
-          // This parseTopN function is workspace-specific and only used within the loop
-          const workspaceParseTopN = () => {
-            let input = Number(topN);
-            if (isNaN(input) || input < 1) return workspace?.topN ?? 4;
-            return input;
-          };
+          // Check all workspaces in parallel - more efficient than sequential searches
+          const searchPromises = workspaces.map(async (workspace) => {
+            try {
+              const hasVectorizedSpace = await VectorDb.hasNamespace(workspace.slug);
+              const embeddingsCount = await VectorDb.namespaceCount(workspace.slug);
 
-          const results = await VectorDb.performSimilaritySearch({
-            namespace: workspace.slug,
-            input: String(query),
-            LLMConnector,
-            similarityThreshold: parseSimilarityThreshold(),
-            topN: workspaceParseTopN(),
-            rerank: workspace?.vectorSearchMode === "rerank",
+              if (!hasVectorizedSpace || embeddingsCount === 0) {
+                return []; // Return empty array for workspaces with no vectors
+              }
+
+              // Use workspace's specific settings for threshold and top N if available
+              const workspaceSimilarityThreshold = workspace?.similarityThreshold ?? similarityThresholdValue;
+              const workspaceTopN = workspace?.topN ?? topNValue;
+
+              // Perform the search
+              const results = await VectorDb.performSimilaritySearch({
+                namespace: workspace.slug,
+                input: searchQuery,
+                LLMConnector: getLLMProvider(),
+                similarityThreshold: workspaceSimilarityThreshold,
+                topN: workspaceTopN,
+                rerank: workspace?.vectorSearchMode === "rerank",
+              });
+
+              // Add workspace info to each result and return
+              return results.sources.map(source => ({
+                ...source,
+                workspaceSlug: workspace.slug, 
+                workspaceName: workspace.name
+              }));
+            } catch (error) {
+              console.error(`Error searching workspace ${workspace.name}:`, error);
+              return []; // Return empty results on error
+            }
           });
 
-          // Add workspace info to each result
-          const workspaceResults = results.sources.map(source => ({
-            ...source,
-            metadata: {
-              ...source.metadata,
-              workspaceSlug: workspace.slug,
-              workspaceName: workspace.name,
-            }
-          }));
-
-          allResults.push(...workspaceResults);
+          // Wait for all searches to complete
+          const searchResults = await Promise.all(searchPromises);
+          
+          // Combine all results into a single array
+          return searchResults.flat();
         }
 
-        // Sort all results by score and take top N
-        const sortedResults = allResults
+        // Get query vector once for all searches
+        const LLMConnector = getLLMProvider();
+        const queryVector = await LLMConnector.embedTextInput(String(query));
+
+        // Search across workspaces in parallel
+        const combinedResults = await searchAcrossWorkspaces(
+          filteredWorkspaces,
+          String(query),
+          queryVector,
+          defaultSimilarityThreshold(),
+          parseTopN()
+        );
+
+        // Sort results by score and take top N
+        const sortedResults = combinedResults
           .sort((a, b) => b.score - a.score)
           .slice(0, parseTopN());
 
+        // Format results for response
         response.status(200).json({
           results: sortedResults.map((source) => ({
             id: source.id,
             text: source.text,
             metadata: {
-              workspaceSlug: source.metadata.workspaceSlug,
-              workspaceName: source.metadata.workspaceName,
+              workspaceSlug: source.workspaceSlug,
+              workspaceName: source.workspaceName,
               url: source.url,
               title: source.title,
               author: source.docAuthor,
