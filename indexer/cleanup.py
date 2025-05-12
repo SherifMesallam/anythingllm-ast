@@ -554,7 +554,9 @@ with col1:
                                      help="Filter workspaces by name containing this text")
 
 with col2:
-    gh_recovery_dry_run = st.checkbox("Dry run (test only, don't make changes)", value=True)
+    gh_recovery_dry_run = st.checkbox("Dry run (test only, don't make changes)", 
+                                     value=True,
+                                     key="gh_recovery_dry_run")
 
 if st.button("Recover GitHub Organization Import", type="primary"):
     with st.spinner("Recovering GitHub organization import..."):
@@ -619,4 +621,91 @@ if st.button("Recover GitHub Organization Import", type="primary"):
             st.error(f"Error during recovery: {str(e)}")
 
 # Leave an empty line for spacing
+st.write("")
+
+# Add GitHub Reimport section
+st.header("GitHub Repository Reimport")
+st.markdown("""
+If you have empty workspaces created from GitHub repositories but they have no content (documents), 
+this tool will reimport the GitHub repositories directly for those workspaces.
+
+This is useful when:
+1. The workspace was created but files were never properly imported
+2. You need to refresh the content of workspaces from GitHub
+""")
+
+# Reimport settings
+col1, col2 = st.columns(2)
+with col1:
+    reimport_github_org = st.text_input("GitHub Organization", 
+                                 placeholder="e.g., gravityforms",
+                                 help="Filter workspaces by organization name",
+                                 key="reimport_github_org")
+    
+    reimport_github_token = st.text_input("GitHub Access Token", 
+                                 type="password",
+                                 help="GitHub personal access token with repo scope",
+                                 key="reimport_github_token")
+
+with col2:
+    reimport_dry_run = st.checkbox("Dry run (test only, don't make changes)", 
+                                  value=True,
+                                  key="reimport_dry_run")
+
+if st.button("Reimport GitHub Repositories for Empty Workspaces", type="primary"):
+    if not reimport_github_token:
+        st.error("GitHub access token is required")
+    else:
+        with st.spinner("Scanning empty workspaces and reimporting from GitHub..."):
+            try:
+                payload = {
+                    "accessToken": reimport_github_token,
+                    "orgNameFilter": reimport_github_org if reimport_github_org else None,
+                    "dryRun": reimport_dry_run
+                }
+                
+                response = make_request(
+                    f"/ext/github/reimport-empty-workspaces",
+                    method="POST",
+                    json_data=payload
+                )
+                
+                if response and response.status_code == 200:
+                    try:
+                        result = response.json()
+                        if result.get("success"):
+                            if reimport_dry_run:
+                                st.success(f"Dry run completed. Found {result.get('emptyWorkspaces', 0)} empty workspaces that would be processed.")
+                            else:
+                                st.success(f"Reimport process started for {result.get('emptyWorkspaces', 0)} workspaces.")
+                            
+                            if "logFile" in result:
+                                st.info(f"Check the log file for details: {result['logFile']}")
+                            
+                            # Add expander for more information
+                            with st.expander("Process details"):
+                                st.write("The reimport process runs in the background on the server.")
+                                st.write("It will:")
+                                st.write("1. Find empty workspaces (those with no documents)")
+                                st.write("2. Determine the GitHub repository from the workspace name")
+                                st.write("3. Download the repository content using GitHub API")
+                                st.write("4. Embed the content into the workspace")
+                                st.write("Check the server logs for detailed progress.")
+                        else:
+                            st.error(f"Error: {result.get('error', 'Unknown error')}")
+                    except Exception as e:
+                        st.error(f"Error parsing response: {str(e)}")
+                else:
+                    st.error(f"Error: {response.status_code if response else 'No response'}")
+                    if response:
+                        try:
+                            error_info = response.json()
+                            st.error(f"Server error: {error_info.get('error', 'Unknown error')}")
+                        except:
+                            st.error(f"Failed to parse response: {response.text}")
+                    
+            except Exception as e:
+                st.error(f"Error during reimport: {str(e)}")
+
+# Leave empty space at the bottom
 st.write("") 

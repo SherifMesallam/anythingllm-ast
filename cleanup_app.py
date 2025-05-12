@@ -554,7 +554,9 @@ with col1:
                                      help="Filter workspaces by name containing this text")
 
 with col2:
-    gh_recovery_dry_run = st.checkbox("Dry run (test only, don't make changes)", value=True)
+    gh_recovery_dry_run = st.checkbox("Dry run (test only, don't make changes)", 
+                                     value=True,
+                                     key="gh_recovery_dry_run")
 
 if st.button("Recover GitHub Organization Import", type="primary"):
     with st.spinner("Recovering GitHub organization import..."):
@@ -637,14 +639,18 @@ col1, col2 = st.columns(2)
 with col1:
     reimport_github_org = st.text_input("GitHub Organization", 
                                  placeholder="e.g., gravityforms",
-                                 help="Filter workspaces by organization name")
+                                 help="Filter workspaces by organization name",
+                                 key="reimport_github_org")
     
     reimport_github_token = st.text_input("GitHub Access Token", 
                                  type="password",
-                                 help="Personal access token with repo permissions")
+                                 help="GitHub personal access token with repo scope",
+                                 key="reimport_github_token")
 
 with col2:
-    reimport_dry_run = st.checkbox("Dry run (test only, don't make changes)", value=True)
+    reimport_dry_run = st.checkbox("Dry run (test only, don't make changes)", 
+                                  value=True,
+                                  key="reimport_dry_run")
 
 if st.button("Reimport GitHub Repositories for Empty Workspaces", type="primary"):
     if not reimport_github_token:

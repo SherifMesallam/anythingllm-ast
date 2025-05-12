@@ -307,13 +307,16 @@ function extensionEndpoints(app) {
 
             appendLog(`Successfully fetched ${responseFromProcessor.data.files} files from ${repoFullName}`);
             
-            // Get the destination information from the collector response
-            const documentDestination = responseFromProcessor.data.destination;
-            appendLog(`Document destination reported by collector: ${documentDestination}`);
+            // Get file destination from collector response
+            const fileDestination = responseFromProcessor.data.destination;
+            const fileCount = responseFromProcessor.data.files;
+            
+            appendLog(`Successfully fetched ${fileCount} files from ${repoFullName}`);
+            appendLog(`File destination: ${fileDestination}`);
             
             // Check multiple possible locations for the destination
             const potentialBasePaths = [
-              documentDestination, // Direct path from collector
+              fileDestination, // Direct path from collector
               path.join(process.cwd(), 'collector', 'hotdir'),
               path.join(process.cwd(), 'server', 'collector', 'hotdir'),
               path.join('/app', 'collector', 'hotdir'),
@@ -331,17 +334,17 @@ function extensionEndpoints(app) {
             let destinationFiles = 0;
             
             // First, check if the direct destination path exists
-            if (fs.existsSync(documentDestination)) {
-              validDestination = documentDestination;
+            if (fs.existsSync(fileDestination)) {
+              validDestination = fileDestination;
               try {
-                const files = fs.readdirSync(documentDestination).filter(f => f.endsWith('.json'));
+                const files = fs.readdirSync(fileDestination).filter(f => f.endsWith('.json'));
                 destinationFiles = files.length;
                 appendLog(`Found ${destinationFiles} JSON files directly in ${validDestination}`);
               } catch (err) {
                 appendLog(`Error reading direct destination directory: ${err.message}`);
               }
             } else {
-              appendLog(`Direct destination path does not exist: ${documentDestination}`);
+              appendLog(`Direct destination path does not exist: ${fileDestination}`);
             }
             
             // If direct path didn't work, look for the document directory in other locations
@@ -356,16 +359,24 @@ function extensionEndpoints(app) {
                 `${repoOwner}-${repoSlug}-master-`, // gravityforms-simpleaddon-master-
                 `${repoOwner}-${repoSlug}-main-`,   // gravityforms-simpleaddon-main-
                 repoSlug,  // simpleaddon
-                `${repoSlug}-master-` // simpleaddon-master-
+                `${repoSlug}-master-`, // simpleaddon-master-
+                `${repoSlug}-main-`,   // simpleaddon-main-
+                // Add more patterns for different branch names
+                `${repoOwner}-${repoSlug}-${repo.default_branch}-`,
+                `${repoSlug}-${repo.default_branch}-`
               ];
               
               // Check each base path for each pattern
               outerLoop: for (const basePath of potentialBasePaths) {
-                if (!fs.existsSync(basePath)) continue;
+                if (!fs.existsSync(basePath)) {
+                  appendLog(`Base path does not exist: ${basePath}`);
+                  continue;
+                }
                 
                 try {
                   // Get all directories in this base path
                   const dirs = fs.readdirSync(basePath);
+                  appendLog(`Found ${dirs.length} directories in ${basePath}`);
                   
                   // Check each directory against our patterns
                   for (const dir of dirs) {
@@ -396,7 +407,7 @@ function extensionEndpoints(app) {
             // Store document destination in progress
             progress.repositories[repoFullName].documents = {
               fileCount: responseFromProcessor.data.files,
-              reportedDestination: documentDestination,
+              reportedDestination: fileDestination,
               actualDestination: validDestination,
               destinationFiles: destinationFiles
             };
@@ -405,16 +416,28 @@ function extensionEndpoints(app) {
             // If we found a valid destination with files, embed it into the workspace
             if (validDestination && destinationFiles > 0) {
               try {
-                appendLog(`Adding ${validDestination}/*.json to workspace ${workspace.slug}`);
+                appendLog(`Adding ${destinationFiles} files from ${validDestination} to workspace ${workspace.slug}`);
                 
-                // Use Document.addDocuments instead of modifyEmbeddings
-                const { Document } = require("../../models/documents");
+                // List all JSON files in the directory
+                const documentFiles = [];
+                try {
+                  const files = fs.readdirSync(validDestination);
+                  for (const file of files) {
+                    if (file.endsWith('.json')) {
+                      documentFiles.push(`${validDestination}/${file}`);
+                    }
+                  }
+                  appendLog(`Found ${documentFiles.length} JSON files to add`);
+                } catch (err) {
+                  appendLog(`Error reading directory ${validDestination}: ${err.message}`);
+                  throw new Error(`Failed to read directory: ${err.message}`);
+                }
                 
-                // Add the directory's JSON files to the workspace
+                // Add individual files to workspace (exactly like UI would)
                 const result = await Document.addDocuments(
                   workspace,
-                  [`${validDestination}/*.json`],
-                  null // No userId for system-level operations
+                  documentFiles,
+                  null // No userId for system operations
                 );
                 
                 if (result.failedToEmbed && result.failedToEmbed.length > 0) {
@@ -645,13 +668,16 @@ function extensionEndpoints(app) {
 
               appendLog(`Successfully fetched ${responseFromProcessor.data.files} files from ${repoFullName}`);
               
-              // Get the destination information from the collector response
-              const documentDestination = responseFromProcessor.data.destination;
-              appendLog(`Document destination reported by collector: ${documentDestination}`);
+              // Get file destination from collector response
+              const fileDestination = responseFromProcessor.data.destination;
+              const fileCount = responseFromProcessor.data.files;
+              
+              appendLog(`Successfully fetched ${fileCount} files from ${repoFullName}`);
+              appendLog(`File destination: ${fileDestination}`);
               
               // Check multiple possible locations for the destination
               const potentialBasePaths = [
-                documentDestination, // Direct path from collector
+                fileDestination, // Direct path from collector
                 path.join(process.cwd(), 'collector', 'hotdir'),
                 path.join(process.cwd(), 'server', 'collector', 'hotdir'),
                 path.join('/app', 'collector', 'hotdir'),
@@ -669,17 +695,17 @@ function extensionEndpoints(app) {
               let destinationFiles = 0;
               
               // First, check if the direct destination path exists
-              if (fs.existsSync(documentDestination)) {
-                validDestination = documentDestination;
+              if (fs.existsSync(fileDestination)) {
+                validDestination = fileDestination;
                 try {
-                  const files = fs.readdirSync(documentDestination).filter(f => f.endsWith('.json'));
+                  const files = fs.readdirSync(fileDestination).filter(f => f.endsWith('.json'));
                   destinationFiles = files.length;
                   appendLog(`Found ${destinationFiles} JSON files directly in ${validDestination}`);
                 } catch (err) {
                   appendLog(`Error reading direct destination directory: ${err.message}`);
                 }
               } else {
-                appendLog(`Direct destination path does not exist: ${documentDestination}`);
+                appendLog(`Direct destination path does not exist: ${fileDestination}`);
               }
               
               // If direct path didn't work, look for the document directory in other locations
@@ -694,16 +720,24 @@ function extensionEndpoints(app) {
                   `${repoOwner}-${repoSlug}-master-`, // gravityforms-simpleaddon-master-
                   `${repoOwner}-${repoSlug}-main-`,   // gravityforms-simpleaddon-main-
                   repoSlug,  // simpleaddon
-                  `${repoSlug}-master-` // simpleaddon-master-
+                  `${repoSlug}-master-`, // simpleaddon-master-
+                  `${repoSlug}-main-`,   // simpleaddon-main-
+                  // Add more patterns for different branch names
+                  `${repoOwner}-${repoSlug}-${repo.default_branch}-`,
+                  `${repoSlug}-${repo.default_branch}-`
                 ];
                 
                 // Check each base path for each pattern
                 outerLoop: for (const basePath of potentialBasePaths) {
-                  if (!fs.existsSync(basePath)) continue;
+                  if (!fs.existsSync(basePath)) {
+                    appendLog(`Base path does not exist: ${basePath}`);
+                    continue;
+                  }
                   
                   try {
                     // Get all directories in this base path
                     const dirs = fs.readdirSync(basePath);
+                    appendLog(`Found ${dirs.length} directories in ${basePath}`);
                     
                     // Check each directory against our patterns
                     for (const dir of dirs) {
@@ -734,7 +768,7 @@ function extensionEndpoints(app) {
               // Store document destination in progress
               repoData.documents = {
                 fileCount: responseFromProcessor.data.files,
-                reportedDestination: documentDestination,
+                reportedDestination: fileDestination,
                 actualDestination: validDestination,
                 destinationFiles: destinationFiles
               };
@@ -743,16 +777,28 @@ function extensionEndpoints(app) {
               // If we found a valid destination with files, embed it into the workspace
               if (validDestination && destinationFiles > 0) {
                 try {
-                  appendLog(`Adding ${validDestination}/*.json to workspace ${repoData.workspace.slug}`);
+                  appendLog(`Adding ${destinationFiles} files from ${validDestination} to workspace ${repoData.workspace.slug}`);
                   
-                  // Use Document.addDocuments instead of modifyEmbeddings
-                  const { Document } = require("../../models/documents");
+                  // List all JSON files in the directory
+                  const documentFiles = [];
+                  try {
+                    const files = fs.readdirSync(validDestination);
+                    for (const file of files) {
+                      if (file.endsWith('.json')) {
+                        documentFiles.push(`${validDestination}/${file}`);
+                      }
+                    }
+                    appendLog(`Found ${documentFiles.length} JSON files to add`);
+                  } catch (err) {
+                    appendLog(`Error reading directory ${validDestination}: ${err.message}`);
+                    throw new Error(`Failed to read directory: ${err.message}`);
+                  }
                   
-                  // Add the directory's JSON files to the workspace
+                  // Add individual files to workspace (exactly like UI would)
                   const result = await Document.addDocuments(
                     repoData.workspace,
-                    [`${validDestination}/*.json`],
-                    null // No userId for system-level operations
+                    documentFiles,
+                    null // No userId for system operations
                   );
                   
                   if (result.failedToEmbed && result.failedToEmbed.length > 0) {
@@ -1568,54 +1614,160 @@ function extensionEndpoints(app) {
             appendLog(`Successfully fetched ${fileCount} files from ${repoFullName}`);
             appendLog(`File destination: ${fileDestination}`);
             
-            // Check if directory exists
-            if (!fs.existsSync(fileDestination)) {
-              appendLog(`Warning: Destination directory ${fileDestination} does not exist`);
-              throw new Error(`Destination directory not found: ${fileDestination}`);
+            // Check multiple possible locations for the destination
+            const potentialBasePaths = [
+              fileDestination, // Direct path from collector
+              path.join(process.cwd(), 'collector', 'hotdir'),
+              path.join(process.cwd(), 'server', 'collector', 'hotdir'),
+              path.join('/app', 'collector', 'hotdir'),
+              path.join('/app', 'server', 'collector', 'hotdir'),
+              path.join('/data', 'collector', 'hotdir'),
+              path.join('/opt/render', 'collector', 'hotdir'),
+              path.join('/opt/render/project', 'collector', 'hotdir'),
+              path.join('/storage', 'documents'),
+              path.join(process.cwd(), 'storage', 'documents'),
+              path.join('/app', 'storage', 'documents')
+            ];
+            
+            // Look for alternative paths for the destination directory
+            let validDestination = null;
+            let destinationFiles = 0;
+            
+            // First, check if the direct destination path exists
+            if (fs.existsSync(fileDestination)) {
+              validDestination = fileDestination;
+              try {
+                const files = fs.readdirSync(fileDestination).filter(f => f.endsWith('.json'));
+                destinationFiles = files.length;
+                appendLog(`Found ${destinationFiles} JSON files directly in ${validDestination}`);
+              } catch (err) {
+                appendLog(`Error reading direct destination directory: ${err.message}`);
+              }
+            } else {
+              appendLog(`Direct destination path does not exist: ${fileDestination}`);
             }
             
-            // List all JSON files in the directory
-            const documentFiles = [];
-            try {
-              const files = fs.readdirSync(fileDestination);
-              for (const file of files) {
-                if (file.endsWith('.json')) {
-                  documentFiles.push(`${fileDestination}/${file}`);
+            // If direct path didn't work, look for the document directory in other locations
+            if (!validDestination || destinationFiles === 0) {
+              // Generate possible directory name patterns
+              const repoName = repoFullName.replace('/', '-').toLowerCase();
+              const repoOwner = repoFullName.split('/')[0].toLowerCase();
+              const repoSlug = repoFullName.split('/')[1].toLowerCase();
+              
+              const possibleDirPatterns = [
+                repoName,  // gravityforms-simpleaddon
+                `${repoOwner}-${repoSlug}-master-`, // gravityforms-simpleaddon-master-
+                `${repoOwner}-${repoSlug}-main-`,   // gravityforms-simpleaddon-main-
+                repoSlug,  // simpleaddon
+                `${repoSlug}-master-`, // simpleaddon-master-
+                `${repoSlug}-main-`,   // simpleaddon-main-
+                // Add more patterns for different branch names
+                `${repoOwner}-${repoSlug}-${repo.default_branch}-`,
+                `${repoSlug}-${repo.default_branch}-`
+              ];
+              
+              // Check each base path for each pattern
+              outerLoop: for (const basePath of potentialBasePaths) {
+                if (!fs.existsSync(basePath)) {
+                  appendLog(`Base path does not exist: ${basePath}`);
+                  continue;
+                }
+                
+                try {
+                  // Get all directories in this base path
+                  const dirs = fs.readdirSync(basePath);
+                  appendLog(`Found ${dirs.length} directories in ${basePath}`);
+                  
+                  // Check each directory against our patterns
+                  for (const dir of dirs) {
+                    for (const pattern of possibleDirPatterns) {
+                      if (dir.includes(pattern)) {
+                        const candidatePath = path.join(basePath, dir);
+                        try {
+                          // Check if this directory has JSON files
+                          const files = fs.readdirSync(candidatePath).filter(f => f.endsWith('.json'));
+                          if (files.length > 0) {
+                            validDestination = candidatePath;
+                            destinationFiles = files.length;
+                            appendLog(`Found alternative directory with ${files.length} JSON files: ${validDestination}`);
+                            break outerLoop;
+                          }
+                        } catch (err) {
+                          appendLog(`Error checking directory ${candidatePath}: ${err.message}`);
+                        }
+                      }
+                    }
+                  }
+                } catch (error) {
+                  appendLog(`Error reading directory ${basePath}: ${error.message}`);
                 }
               }
-              appendLog(`Found ${documentFiles.length} JSON files in ${fileDestination}`);
-            } catch (err) {
-              appendLog(`Error reading directory ${fileDestination}: ${err.message}`);
-              throw new Error(`Failed to read directory: ${err.message}`);
             }
             
-            if (documentFiles.length === 0) {
-              appendLog(`No JSON files found in ${fileDestination}`);
-              throw new Error(`No JSON files found in destination directory`);
+            // Store document destination in progress
+            progress.repositories[repoFullName].documents = {
+              fileCount: responseFromProcessor.data.files,
+              reportedDestination: fileDestination,
+              actualDestination: validDestination,
+              destinationFiles: destinationFiles
+            };
+            updateProgress();
+            
+            // If we found a valid destination with files, embed it into the workspace
+            if (validDestination && destinationFiles > 0) {
+              try {
+                appendLog(`Adding ${destinationFiles} files from ${validDestination} to workspace ${workspace.slug}`);
+                
+                // List all JSON files in the directory
+                const documentFiles = [];
+                try {
+                  const files = fs.readdirSync(validDestination);
+                  for (const file of files) {
+                    if (file.endsWith('.json')) {
+                      documentFiles.push(`${validDestination}/${file}`);
+                    }
+                  }
+                  appendLog(`Found ${documentFiles.length} JSON files to add`);
+                } catch (err) {
+                  appendLog(`Error reading directory ${validDestination}: ${err.message}`);
+                  throw new Error(`Failed to read directory: ${err.message}`);
+                }
+                
+                // Add individual files to workspace (exactly like UI would)
+                const result = await Document.addDocuments(
+                  workspace,
+                  documentFiles,
+                  null // No userId for system operations
+                );
+                
+                if (result.failedToEmbed && result.failedToEmbed.length > 0) {
+                  appendLog(`Warning: ${result.failedToEmbed.length} files failed to embed: ${result.errors.join(', ')}`);
+                }
+                
+                appendLog(`Successfully imported ${repoFullName} into workspace ${workspace.slug}`);
+                
+                results.successful++;
+                results.details.push({
+                  workspace: workspace.slug,
+                  repository: repoFullName,
+                  status: "success",
+                  fileCount,
+                  destination: fileDestination
+                });
+              } catch (error) {
+                appendLog(`Error processing workspace ${workspace.slug}: ${error.message}`);
+                results.failed++;
+                results.details.push({
+                  workspace: workspace.slug,
+                  repository: repoFullName,
+                  status: "failed",
+                  error: error.message
+                });
+              }
+            } else {
+              // No valid destination found
+              throw new Error(`Directory not found: None of the potential locations contained the repository files`);
             }
-            
-            // Add individual files to workspace (exactly like UI would)
-            appendLog(`Adding ${documentFiles.length} files to workspace ${workspace.slug}`);
-            const result = await Document.addDocuments(
-              workspace,
-              documentFiles,
-              null // No userId for system operations
-            );
-            
-            if (result.failedToEmbed && result.failedToEmbed.length > 0) {
-              appendLog(`Warning: ${result.failedToEmbed.length} files failed to embed: ${result.errors.join(', ')}`);
-            }
-            
-            appendLog(`Successfully imported ${repoFullName} into workspace ${workspace.slug}`);
-            
-            results.successful++;
-            results.details.push({
-              workspace: workspace.slug,
-              repository: repoFullName,
-              status: "success",
-              fileCount,
-              destination: fileDestination
-            });
           } catch (error) {
             appendLog(`Error processing workspace ${workspace.slug}: ${error.message}`);
             results.failed++;
