@@ -869,8 +869,25 @@ function extensionEndpoints(app) {
             
             // Delete document vectors
             appendLog(`Removing document vectors for workspace: ${slug}`);
-            const vectorDb = await getVectorDbClass();
-            await vectorDb.deleteNamespace(slug);
+            try {
+              const vectorDb = await getVectorDbClass();
+              // Check if deleteNamespace function exists before calling it
+              if (typeof vectorDb.deleteNamespace === 'function') {
+                await vectorDb.deleteNamespace(slug);
+              } else {
+                appendLog(`Vector database doesn't support deleteNamespace, trying alternative cleanup approach`);
+                // Alternative approach: Try to delete vectors by document IDs
+                const documents = await Document.where({ workspaceId: workspace.id });
+                if (documents && documents.length > 0) {
+                  appendLog(`Removing vectors for ${documents.length} documents individually`);
+                  for (const doc of documents) {
+                    await DocumentVectors.delete({ documentId: doc.id });
+                  }
+                }
+              }
+            } catch (vectorError) {
+              appendLog(`Warning: Error cleaning vectors: ${vectorError.message} - continuing with workspace deletion`);
+            }
             
             // Delete workspace documents from database
             appendLog(`Removing workspace documents for: ${slug}`);
@@ -905,16 +922,39 @@ function extensionEndpoints(app) {
             path.join(process.cwd(), 'collector', 'hotdir'),
             path.join(process.cwd(), 'server', 'collector', 'hotdir'),
             path.join('/app', 'collector', 'hotdir'),
-            path.join('/app', 'server', 'collector', 'hotdir')
+            path.join('/app', 'server', 'collector', 'hotdir'),
+            // Add Docker container path with volume mount
+            path.join('/data', 'collector', 'hotdir'),
+            // Add the render.com paths
+            path.join('/opt/render', 'collector', 'hotdir'),
+            path.join('/opt/render/project', 'collector', 'hotdir'),
+            // Add the storage directory
+            path.join('/storage', 'documents'),
+            path.join(process.cwd(), 'storage', 'documents'),
+            path.join('/app', 'storage', 'documents')
           ];
+          
+          appendLog(`Searching for directories in ${potentialPaths.length} possible locations`);
+          
+          // Find all hotdirs that exist
+          const existingHotdirs = [];
+          for (const basePath of potentialPaths) {
+            if (fs.existsSync(basePath)) {
+              existingHotdirs.push(basePath);
+              appendLog(`Found hotdir at: ${basePath}`);
+            }
+          }
+          
+          if (existingHotdirs.length === 0) {
+            appendLog(`Warning: No hotdir found in any of the expected locations`);
+          }
           
           for (const directory of directories) {
             appendLog(`Looking for directory: ${directory}`);
             let found = false;
             
-            for (const basePath of potentialPaths) {
-              if (!fs.existsSync(basePath)) continue;
-              
+            // First, try exact match
+            for (const basePath of existingHotdirs) {
               const dirPath = path.join(basePath, directory);
               if (fs.existsSync(dirPath)) {
                 appendLog(`Found directory at: ${dirPath}`);
@@ -924,22 +964,140 @@ function extensionEndpoints(app) {
                 directoryResults.push({ directory, success: true, path: dirPath });
                 break;
               }
-              
-              // Try to find directories that contain this name
+            }
+            
+            if (found) continue;
+            
+            // If not found, try partial match using prefix
+            appendLog(`Directory not found directly, searching for partial matches...`);
+            const directoryPrefix = directory.split('-').slice(0, 2).join('-');
+            
+            for (const basePath of existingHotdirs) {
               try {
                 const entries = fs.readdirSync(basePath);
-                const matchingDir = entries.find(entry => entry.includes(directory));
-                if (matchingDir) {
-                  const fullPath = path.join(basePath, matchingDir);
-                  appendLog(`Found similar directory: ${fullPath}`);
-                  appendLog(`Removing directory: ${fullPath}`);
-                  fs.rmSync(fullPath, { recursive: true, force: true });
-                  found = true;
-                  directoryResults.push({ directory, success: true, path: fullPath });
+                const matchingDirs = entries.filter(entry => entry.startsWith(directoryPrefix));
+                
+                if (matchingDirs.length > 0) {
+                  appendLog(`Found ${matchingDirs.length} similar directories starting with ${directoryPrefix}`);
+                  
+                  for (const matchingDir of matchingDirs) {
+                    const fullPath = path.join(basePath, matchingDir);
+                    appendLog(`Removing matching directory: ${fullPath}`);
+                    fs.rmSync(fullPath, { recursive: true, force: true });
+                    found = true;
+                    directoryResults.push({ directory: matchingDir, success: true, path: fullPath });
+                  }
                   break;
                 }
               } catch (e) {
                 appendLog(`Error reading directory ${basePath}: ${e.message}`);
+              }
+            }
+            
+            if (found) continue;
+            
+            // Last attempt - try looser matching
+            appendLog(`No direct matches found, trying broader search...`);
+            
+            // Also try directly in /storage/documents with different patterns
+            const storageDocPaths = [
+              '/storage/documents',
+              path.join(process.cwd(), 'storage', 'documents'),
+              path.join('/app', 'storage', 'documents')
+            ];
+            
+            for (const storagePath of storageDocPaths) {
+              if (fs.existsSync(storagePath)) {
+                appendLog(`Checking storage documents path: ${storagePath}`);
+                
+                try {
+                  const entries = fs.readdirSync(storagePath);
+                  
+                  // Extract key identifiers from directory name
+                  const parts = directory.split('-');
+                  // Get the repo name part without the suffix
+                  let repoName = "";
+                  if (parts.length >= 2) {
+                    repoName = parts[1]; // e.g. "customer_map" from "gravityforms-customer_map-master-f5d9"
+                  }
+                  
+                  // Different common patterns
+                  const possiblePatterns = [
+                    repoName,
+                    parts[0], // e.g. "gravityforms"
+                    directory.split('-')[0] + '-' + directory.split('-')[1], // e.g. "gravityforms-customer_map"
+                    parts[parts.length-1] // e.g. "f5d9"
+                  ].filter(p => p && p.length > 2);
+                  
+                  appendLog(`Looking for patterns: ${possiblePatterns.join(', ')}`);
+                  
+                  // Find any directory that matches our patterns
+                  for (const entry of entries) {
+                    const matchesPattern = possiblePatterns.some(pattern => 
+                      entry.includes(pattern) || 
+                      entry.toLowerCase().includes(pattern.toLowerCase())
+                    );
+                    
+                    if (matchesPattern) {
+                      const fullPath = path.join(storagePath, entry);
+                      appendLog(`Found matching directory in storage: ${fullPath}`);
+                      
+                      if (fs.statSync(fullPath).isDirectory()) {
+                        appendLog(`Removing matched storage directory: ${fullPath}`);
+                        fs.rmSync(fullPath, { recursive: true, force: true });
+                        found = true;
+                        directoryResults.push({ directory: entry, success: true, path: fullPath });
+                      }
+                    }
+                  }
+                } catch (e) {
+                  appendLog(`Error checking storage directory ${storagePath}: ${e.message}`);
+                }
+              }
+            }
+            
+            for (const basePath of existingHotdirs) {
+              try {
+                const allFiles = [];
+                
+                // Recursive function to find all directories
+                const findAllDirs = (dir, results = []) => {
+                  const entries = fs.readdirSync(dir);
+                  for (const entry of entries) {
+                    const fullPath = path.join(dir, entry);
+                    if (fs.statSync(fullPath).isDirectory()) {
+                      results.push(fullPath);
+                      findAllDirs(fullPath, results);
+                    }
+                  }
+                  return results;
+                };
+                
+                try {
+                  const allDirs = findAllDirs(basePath);
+                  // Look for any directory that contains key parts of the target directory
+                  const parts = directory.split('-');
+                  const keyParts = parts.filter(p => p.length > 3);
+                  
+                  const matchingPaths = allDirs.filter(dir => {
+                    const dirName = path.basename(dir);
+                    return keyParts.some(part => dirName.includes(part));
+                  });
+                  
+                  if (matchingPaths.length > 0) {
+                    appendLog(`Found ${matchingPaths.length} directories containing key parts of ${directory}`);
+                    for (const matchPath of matchingPaths) {
+                      appendLog(`Removing broadly matched directory: ${matchPath}`);
+                      fs.rmSync(matchPath, { recursive: true, force: true });
+                      found = true;
+                      directoryResults.push({ directory: path.basename(matchPath), success: true, path: matchPath });
+                    }
+                  }
+                } catch (searchError) {
+                  appendLog(`Error in broad directory search: ${searchError.message}`);
+                }
+              } catch (e) {
+                appendLog(`Error in directory traversal: ${e.message}`);
               }
             }
             
