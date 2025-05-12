@@ -291,6 +291,18 @@ gravityforms-webops-backlog-main-b03e
 gravityforms-trial-template-main-635f"""
 )
 
+# Input for slug patterns to match
+slug_patterns_input = st.text_area(
+    "Slug Patterns to Clean (one per line)",
+    height=150,
+    help="Enter patterns to match against workspace slugs. Any workspace with a slug containing these patterns will be cleaned up.",
+    value="""site
+simple
+customer
+gf-
+project"""
+)
+
 # Display the confirmation phrase requirement
 st.warning("⚠️ This operation is destructive and cannot be undone!")
 confirmation = st.text_input(
@@ -312,18 +324,20 @@ if st.button("Clean Workspaces and Directories"):
         # Parse input data
         workspaces = [w.strip() for w in workspace_input.strip().split("\n") if w.strip()]
         directories = [d.strip() for d in directory_input.strip().split("\n") if d.strip()]
+        slug_patterns = [p.strip() for p in slug_patterns_input.strip().split("\n") if p.strip()]
         
-        if not workspaces and not directories:
-            st.error("You must provide at least one workspace or directory to clean")
+        if not workspaces and not directories and not slug_patterns:
+            st.error("You must provide at least one workspace, directory, or slug pattern to clean")
             st.stop()
         
         # Confirm the operation
-        st.info(f"Will clean {len(workspaces)} workspaces and {len(directories)} directories")
+        st.info(f"Will clean {len(workspaces)} explicitly named workspaces, {len(directories)} directories, and any workspace matching {len(slug_patterns)} patterns")
         
         # Make the API request
         json_data = {
             "workspaces": workspaces,
             "directories": directories,
+            "slugPatterns": slug_patterns,
             "confirmPhrase": confirmation
         }
         
@@ -509,6 +523,15 @@ with st.expander("Help - Sample Data"):
     gravityforms-stripeapp-master-bf38
     gravityforms-webops-backlog-main-b03e
     gravityforms-trial-template-main-635f
+    ```
+    
+    Slug patterns to match against workspaces:
+    ```
+    site
+    simple
+    customer
+    gf-
+    project
     ```
     
     Remember to type `CONFIRM_WORKSPACE_DELETION` in the confirmation field to proceed with deletion.

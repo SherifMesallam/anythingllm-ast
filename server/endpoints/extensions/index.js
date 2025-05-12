@@ -801,7 +801,7 @@ function extensionEndpoints(app) {
     ],
     async (request, response) => {
       try {
-        const { workspaces = [], directories = [], confirmPhrase } = reqBody(request);
+        const { workspaces = [], directories = [], confirmPhrase, slugPatterns = [] } = reqBody(request);
         
         // Require confirmation phrase as a safety measure
         if (confirmPhrase !== "CONFIRM_WORKSPACE_DELETION") {
@@ -812,10 +812,10 @@ function extensionEndpoints(app) {
         }
 
         // Validate we have something to clean up
-        if (workspaces.length === 0 && directories.length === 0) {
+        if (workspaces.length === 0 && directories.length === 0 && slugPatterns.length === 0) {
           return response.status(400).json({
             success: false,
-            error: "No workspaces or directories specified for cleanup"
+            error: "No workspaces, directories, or slug patterns specified for cleanup"
           });
         }
 
@@ -843,7 +843,8 @@ function extensionEndpoints(app) {
           message: "Cleanup process started",
           logFile,
           workspaces: workspaces.length,
-          directories: directories.length
+          directories: directories.length,
+          slugPatterns: slugPatterns.length
         });
 
         // Import required models
@@ -853,7 +854,37 @@ function extensionEndpoints(app) {
         const { WorkspaceChats } = require("../../models/workspaceChats");
         const { getVectorDbClass } = require("../../utils/helpers");
 
-        // 1. Clean up workspaces from the database
+        // 1. Clean up workspaces by slug patterns if provided
+        const patternResults = [];
+        if (slugPatterns && slugPatterns.length > 0) {
+          appendLog(`Starting cleanup for workspaces matching patterns: ${slugPatterns.join(', ')}`);
+          
+          try {
+            // Get all workspaces
+            const allWorkspaces = await Workspace.where({});
+            const matchingWorkspaces = allWorkspaces.filter(workspace => 
+              slugPatterns.some(pattern => workspace.slug.includes(pattern))
+            );
+            
+            appendLog(`Found ${matchingWorkspaces.length} workspaces matching the provided patterns`);
+            
+            // Add matching workspaces to the workspace list for cleanup
+            for (const workspace of matchingWorkspaces) {
+              if (!workspaces.includes(workspace.slug)) {
+                workspaces.push(workspace.slug);
+                patternResults.push({ 
+                  slug: workspace.slug, 
+                  pattern: slugPatterns.find(p => workspace.slug.includes(p)) 
+                });
+                appendLog(`Added workspace '${workspace.slug}' to cleanup list (matched pattern: ${slugPatterns.find(p => workspace.slug.includes(p))})`);
+              }
+            }
+          } catch (error) {
+            appendLog(`ERROR finding workspaces by patterns: ${error.message}`);
+          }
+        }
+
+        // 2. Clean up workspaces from the database
         const workspaceResults = [];
         for (const slug of workspaces) {
           try {
@@ -953,7 +984,7 @@ function extensionEndpoints(app) {
             appendLog(`Looking for directory: ${directory}`);
             let found = false;
             
-            // First, try exact match
+            // Only try exact match
             for (const basePath of existingHotdirs) {
               const dirPath = path.join(basePath, directory);
               if (fs.existsSync(dirPath)) {
@@ -966,141 +997,7 @@ function extensionEndpoints(app) {
               }
             }
             
-            if (found) continue;
-            
-            // If not found, try partial match using prefix
-            appendLog(`Directory not found directly, searching for partial matches...`);
-            const directoryPrefix = directory.split('-').slice(0, 2).join('-');
-            
-            for (const basePath of existingHotdirs) {
-              try {
-                const entries = fs.readdirSync(basePath);
-                const matchingDirs = entries.filter(entry => entry.startsWith(directoryPrefix));
-                
-                if (matchingDirs.length > 0) {
-                  appendLog(`Found ${matchingDirs.length} similar directories starting with ${directoryPrefix}`);
-                  
-                  for (const matchingDir of matchingDirs) {
-                    const fullPath = path.join(basePath, matchingDir);
-                    appendLog(`Removing matching directory: ${fullPath}`);
-                    fs.rmSync(fullPath, { recursive: true, force: true });
-                    found = true;
-                    directoryResults.push({ directory: matchingDir, success: true, path: fullPath });
-                  }
-                  break;
-                }
-              } catch (e) {
-                appendLog(`Error reading directory ${basePath}: ${e.message}`);
-              }
-            }
-            
-            if (found) continue;
-            
-            // Last attempt - try looser matching
-            appendLog(`No direct matches found, trying broader search...`);
-            
-            // Also try directly in /storage/documents with different patterns
-            const storageDocPaths = [
-              '/storage/documents',
-              path.join(process.cwd(), 'storage', 'documents'),
-              path.join('/app', 'storage', 'documents')
-            ];
-            
-            for (const storagePath of storageDocPaths) {
-              if (fs.existsSync(storagePath)) {
-                appendLog(`Checking storage documents path: ${storagePath}`);
-                
-                try {
-                  const entries = fs.readdirSync(storagePath);
-                  
-                  // Extract key identifiers from directory name
-                  const parts = directory.split('-');
-                  // Get the repo name part without the suffix
-                  let repoName = "";
-                  if (parts.length >= 2) {
-                    repoName = parts[1]; // e.g. "customer_map" from "gravityforms-customer_map-master-f5d9"
-                  }
-                  
-                  // Different common patterns
-                  const possiblePatterns = [
-                    repoName,
-                    parts[0], // e.g. "gravityforms"
-                    directory.split('-')[0] + '-' + directory.split('-')[1], // e.g. "gravityforms-customer_map"
-                    parts[parts.length-1] // e.g. "f5d9"
-                  ].filter(p => p && p.length > 2);
-                  
-                  appendLog(`Looking for patterns: ${possiblePatterns.join(', ')}`);
-                  
-                  // Find any directory that matches our patterns
-                  for (const entry of entries) {
-                    const matchesPattern = possiblePatterns.some(pattern => 
-                      entry.includes(pattern) || 
-                      entry.toLowerCase().includes(pattern.toLowerCase())
-                    );
-                    
-                    if (matchesPattern) {
-                      const fullPath = path.join(storagePath, entry);
-                      appendLog(`Found matching directory in storage: ${fullPath}`);
-                      
-                      if (fs.statSync(fullPath).isDirectory()) {
-                        appendLog(`Removing matched storage directory: ${fullPath}`);
-                        fs.rmSync(fullPath, { recursive: true, force: true });
-                        found = true;
-                        directoryResults.push({ directory: entry, success: true, path: fullPath });
-                      }
-                    }
-                  }
-                } catch (e) {
-                  appendLog(`Error checking storage directory ${storagePath}: ${e.message}`);
-                }
-              }
-            }
-            
-            for (const basePath of existingHotdirs) {
-              try {
-                const allFiles = [];
-                
-                // Recursive function to find all directories
-                const findAllDirs = (dir, results = []) => {
-                  const entries = fs.readdirSync(dir);
-                  for (const entry of entries) {
-                    const fullPath = path.join(dir, entry);
-                    if (fs.statSync(fullPath).isDirectory()) {
-                      results.push(fullPath);
-                      findAllDirs(fullPath, results);
-                    }
-                  }
-                  return results;
-                };
-                
-                try {
-                  const allDirs = findAllDirs(basePath);
-                  // Look for any directory that contains key parts of the target directory
-                  const parts = directory.split('-');
-                  const keyParts = parts.filter(p => p.length > 3);
-                  
-                  const matchingPaths = allDirs.filter(dir => {
-                    const dirName = path.basename(dir);
-                    return keyParts.some(part => dirName.includes(part));
-                  });
-                  
-                  if (matchingPaths.length > 0) {
-                    appendLog(`Found ${matchingPaths.length} directories containing key parts of ${directory}`);
-                    for (const matchPath of matchingPaths) {
-                      appendLog(`Removing broadly matched directory: ${matchPath}`);
-                      fs.rmSync(matchPath, { recursive: true, force: true });
-                      found = true;
-                      directoryResults.push({ directory: path.basename(matchPath), success: true, path: matchPath });
-                    }
-                  }
-                } catch (searchError) {
-                  appendLog(`Error in broad directory search: ${searchError.message}`);
-                }
-              } catch (e) {
-                appendLog(`Error in directory traversal: ${e.message}`);
-              }
-            }
-            
+            // If not found by exact name, don't try pattern matching
             if (!found) {
               appendLog(`Directory not found: ${directory}`);
               directoryResults.push({ directory, success: false, reason: "Directory not found" });
