@@ -1309,48 +1309,56 @@ function extensionEndpoints(app) {
             appendLog(`Found matching directory for ${workspace.slug}: ${documentDir} (matched pattern: ${foundPattern})`);
             results.found++;
             
-            // Check if it has JSON files
+            // Find document files in the directory
+            const documentFiles = [];
             try {
-              const hasJsonFiles = fs.readdirSync(documentDir).some(file => file.endsWith('.json'));
-              if (hasJsonFiles) {
-                appendLog(`Directory has JSON files: ${documentDir}`);
-                
-                if (!dryRun) {
-                  try {
-                    // Add directory to workspace using Document.addDocuments
-                    const { Document } = require("../../models/documents");
-                    
-                    // Add the directory's JSON files to the workspace
-                    const result = await Document.addDocuments(
-                      workspace,
-                      [`${documentDir}/*.json`],
-                      null // No userId for system-level operations
-                    );
-                    
-                    if (result.failedToEmbed && result.failedToEmbed.length > 0) {
-                      const errorMessage = `Successfully added some files, but ${result.failedToEmbed.length} files failed: ${result.errors.join(', ')}`;
-                      appendLog(errorMessage);
-                      workspaceResult.error = errorMessage;
-                    } else {
-                      appendLog(`Successfully added ${documentDir}/*.json to workspace ${workspace.slug}`);
-                      workspaceResult.fixed = true;
-                      results.fixed++;
-                    }
-                  } catch (error) {
-                    appendLog(`Error adding directory to workspace: ${error.message}`);
-                    workspaceResult.error = error.message;
-                  }
-                } else {
-                  appendLog(`[DRY RUN] Would add ${documentDir}/*.json to workspace ${workspace.slug}`);
-                  results.skipped++;
+              const files = fs.readdirSync(documentDir);
+              for (const file of files) {
+                if (file.endsWith('.json')) {
+                  documentFiles.push(`${documentDir}/${file}`);
                 }
-              } else {
-                appendLog(`Warning: No JSON files found in ${documentDir}`);
-                workspaceResult.error = "No JSON files found";
               }
-            } catch (error) {
-              appendLog(`Error checking for JSON files in ${documentDir}: ${error.message}`);
-              workspaceResult.error = error.message;
+              appendLog(`Found ${documentFiles.length} JSON files in ${documentDir} for workspace ${workspace.slug}`);
+              workspaceResult.found = true;
+            } catch (err) {
+              appendLog(`Error reading directory ${documentDir}: ${err.message}`);
+              workspaceResult.error = `Error reading directory: ${err.message}`;
+              results.notFound++;
+              results.details.push(workspaceResult);
+              continue;
+            }
+            
+            if (documentFiles.length === 0) {
+              appendLog(`No JSON files found in ${documentDir} for workspace ${workspace.slug}`);
+              workspaceResult.error = 'No JSON files found in directory';
+              results.notFound++;
+              results.details.push(workspaceResult);
+              continue;
+            }
+            
+            if (!dryRun) {
+              try {
+                appendLog(`Adding ${documentFiles.length} files to workspace ${workspace.slug}`);
+                const result = await Document.addDocuments(
+                  workspace,
+                  documentFiles,
+                  null // No userId for system operations
+                );
+                
+                if (result.failedToEmbed && result.failedToEmbed.length > 0) {
+                  appendLog(`Warning: ${result.failedToEmbed.length} files failed to embed: ${result.errors.join(', ')}`);
+                }
+                
+                appendLog(`Successfully imported ${workspace.slug} into workspace ${workspace.slug}`);
+                workspaceResult.fixed = true;
+                results.fixed++;
+              } catch (error) {
+                appendLog(`Error adding files to workspace: ${error.message}`);
+                workspaceResult.error = error.message;
+              }
+            } else {
+              appendLog(`[DRY RUN] Would add ${documentFiles.length} files to workspace ${workspace.slug}`);
+              results.skipped++;
             }
           } else {
             appendLog(`No matching directory found for workspace: ${workspace.slug}`);
@@ -1375,6 +1383,264 @@ function extensionEndpoints(app) {
           success: false,
           error: e.message
         });
+      }
+    }
+  );
+
+  // New endpoint to reimport GitHub repositories for empty workspaces
+  app.post(
+    "/ext/github/reimport-empty-workspaces",
+    [
+      validatedRequest,
+      flexUserRoleValid([ROLES.admin, ROLES.manager]),
+    ],
+    async (request, response) => {
+      try {
+        const { accessToken, orgNameFilter, dryRun = true } = reqBody(request);
+        
+        if (!accessToken) {
+          return response.status(400).json({
+            success: false,
+            error: "Missing required parameter: accessToken"
+          });
+        }
+
+        // Create persistent log file
+        const logDir = path.join(process.cwd(), "logs");
+        if (!fs.existsSync(logDir)) {
+          fs.mkdirSync(logDir, { recursive: true });
+        }
+        
+        const logId = uuidv4().substring(0, 8);
+        const logFile = path.join(logDir, `github-reimport-${logId}.log`);
+        
+        // Write initial log
+        fs.writeFileSync(logFile, `[${new Date().toISOString()}] Starting GitHub reimport for empty workspaces\n`);
+        
+        // Function to append to log
+        const appendLog = (message) => {
+          fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`);
+          console.log(`[GitHub Reimport] ${message}`);
+        };
+
+        // Load required models
+        const { Workspace } = require("../../models/workspace");
+        const { Document } = require("../../models/documents");
+        const { CollectorApi } = require("../../utils/collectorApi");
+        
+        // Get all workspaces
+        appendLog(`Fetching all workspaces...`);
+        const allWorkspaces = await Workspace.where({});
+        appendLog(`Found ${allWorkspaces.length} total workspaces`);
+        
+        // Filter workspaces if orgNameFilter is provided
+        let workspacesToProcess = allWorkspaces;
+        if (orgNameFilter) {
+          const filter = orgNameFilter.toLowerCase();
+          workspacesToProcess = allWorkspaces.filter(workspace => 
+            workspace.slug.includes(filter) || 
+            workspace.name.toLowerCase().includes(filter)
+          );
+          appendLog(`Filtered to ${workspacesToProcess.length} workspaces matching ${orgNameFilter}`);
+        }
+        
+        // Check for workspaces with no documents
+        const emptyWorkspaces = [];
+        for (const workspace of workspacesToProcess) {
+          const documents = await Document.where({ workspaceId: workspace.id });
+          if (!documents || documents.length === 0) {
+            emptyWorkspaces.push(workspace);
+          }
+        }
+        
+        appendLog(`Found ${emptyWorkspaces.length} empty workspaces to process`);
+        
+        // Prepare to store results
+        const results = {
+          total: emptyWorkspaces.length,
+          processed: 0,
+          successful: 0,
+          failed: 0,
+          skipped: dryRun ? emptyWorkspaces.length : 0,
+          details: []
+        };
+        
+        // Send immediate response to client
+        response.status(200).json({
+          success: true,
+          message: "Reimport process started",
+          logFile,
+          emptyWorkspaces: emptyWorkspaces.length
+        });
+        
+        if (dryRun) {
+          appendLog(`[DRY RUN] Would process ${emptyWorkspaces.length} workspaces, but dry run is enabled`);
+          
+          // Log what would be processed
+          for (const workspace of emptyWorkspaces) {
+            appendLog(`[DRY RUN] Would reimport GitHub repository for workspace: ${workspace.slug}`);
+            results.details.push({
+              workspace: workspace.slug,
+              status: "skipped",
+              reason: "Dry run enabled"
+            });
+          }
+          
+          appendLog(`[DRY RUN] Reimport process completed: All ${emptyWorkspaces.length} workspaces skipped due to dry run`);
+          return;
+        }
+        
+        // Setup the collector API
+        const collectorApi = new CollectorApi();
+        
+        // Process each empty workspace
+        for (const workspace of emptyWorkspaces) {
+          appendLog(`Processing workspace: ${workspace.slug} (ID: ${workspace.id})`);
+          results.processed++;
+          
+          // Determine the GitHub repository from the workspace slug or name
+          let repoName = workspace.slug;
+          let orgName = orgNameFilter || ""; // Default to provided org filter
+          
+          // Attempt to extract organization name from slug if it's formatted like "orgname-reponame"
+          const slugParts = workspace.slug.split('-');
+          if (slugParts.length > 1 && !orgName) {
+            // Make an educated guess - the first part might be the org name
+            orgName = slugParts[0];
+          }
+          
+          // Remove org name prefix from repo name if present (e.g., "gravityforms-repo" -> "repo")
+          if (orgName && repoName.startsWith(`${orgName}-`)) {
+            repoName = repoName.substring(orgName.length + 1);
+          }
+          
+          // If slug follows pattern "org-repo-branch-hash", try to extract repo name
+          const repoMatch = workspace.slug.match(/^([^-]+)-([^-]+)(-[^-]+-[^-]+)?$/);
+          if (repoMatch) {
+            orgName = repoMatch[1];
+            repoName = repoMatch[2];
+          }
+          
+          const repoFullName = `${orgName}/${repoName}`;
+          appendLog(`Determined repository as: ${repoFullName}`);
+          
+          try {
+            const repoUrl = `https://github.com/${repoFullName}`;
+            appendLog(`Fetching GitHub repository: ${repoUrl}`);
+            
+            // Determine default branch - we'll try 'main' first, then 'master' if it fails
+            let branches = ['main', 'master'];
+            let success = false;
+            let responseFromProcessor = null;
+            
+            for (const branch of branches) {
+              try {
+                appendLog(`Trying branch: ${branch}`);
+                responseFromProcessor = await collectorApi.forwardExtensionRequest({
+                  endpoint: `/ext/github-repo`,
+                  method: "POST",
+                  body: JSON.stringify({
+                    repo: repoUrl,
+                    accessToken,
+                    branch,
+                    ignorePaths: []
+                  })
+                });
+                
+                if (responseFromProcessor.success) {
+                  success = true;
+                  appendLog(`Successfully fetched repository with branch: ${branch}`);
+                  break;
+                }
+              } catch (branchError) {
+                appendLog(`Error fetching with branch ${branch}: ${branchError.message}`);
+              }
+            }
+            
+            if (!success || !responseFromProcessor.success) {
+              throw new Error(`Failed to fetch repository content for ${repoFullName}`);
+            }
+            
+            // Get file destination from collector response
+            const fileDestination = responseFromProcessor.data.destination;
+            const fileCount = responseFromProcessor.data.files;
+            
+            appendLog(`Successfully fetched ${fileCount} files from ${repoFullName}`);
+            appendLog(`File destination: ${fileDestination}`);
+            
+            // Check if directory exists
+            if (!fs.existsSync(fileDestination)) {
+              appendLog(`Warning: Destination directory ${fileDestination} does not exist`);
+              throw new Error(`Destination directory not found: ${fileDestination}`);
+            }
+            
+            // List all JSON files in the directory
+            const documentFiles = [];
+            try {
+              const files = fs.readdirSync(fileDestination);
+              for (const file of files) {
+                if (file.endsWith('.json')) {
+                  documentFiles.push(`${fileDestination}/${file}`);
+                }
+              }
+              appendLog(`Found ${documentFiles.length} JSON files in ${fileDestination}`);
+            } catch (err) {
+              appendLog(`Error reading directory ${fileDestination}: ${err.message}`);
+              throw new Error(`Failed to read directory: ${err.message}`);
+            }
+            
+            if (documentFiles.length === 0) {
+              appendLog(`No JSON files found in ${fileDestination}`);
+              throw new Error(`No JSON files found in destination directory`);
+            }
+            
+            // Add individual files to workspace (exactly like UI would)
+            appendLog(`Adding ${documentFiles.length} files to workspace ${workspace.slug}`);
+            const result = await Document.addDocuments(
+              workspace,
+              documentFiles,
+              null // No userId for system operations
+            );
+            
+            if (result.failedToEmbed && result.failedToEmbed.length > 0) {
+              appendLog(`Warning: ${result.failedToEmbed.length} files failed to embed: ${result.errors.join(', ')}`);
+            }
+            
+            appendLog(`Successfully imported ${repoFullName} into workspace ${workspace.slug}`);
+            
+            results.successful++;
+            results.details.push({
+              workspace: workspace.slug,
+              repository: repoFullName,
+              status: "success",
+              fileCount,
+              destination: fileDestination
+            });
+          } catch (error) {
+            appendLog(`Error processing workspace ${workspace.slug}: ${error.message}`);
+            results.failed++;
+            results.details.push({
+              workspace: workspace.slug,
+              repository: repoFullName,
+              status: "failed",
+              error: error.message
+            });
+          }
+        }
+        
+        appendLog(`Reimport process completed: ${results.successful} successful, ${results.failed} failed, ${results.skipped} skipped`);
+        
+        // Write final results to log
+        fs.appendFileSync(logFile, `\n[${new Date().toISOString()}] FINAL RESULTS:\n${JSON.stringify(results, null, 2)}\n`);
+        
+      } catch (e) {
+        console.error(e);
+        if (!response.headersSent) {
+          response.status(500).json({
+            success: false,
+            error: e.message
+          });
+        }
       }
     }
   );
