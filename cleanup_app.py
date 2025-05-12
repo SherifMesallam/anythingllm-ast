@@ -32,14 +32,58 @@ st.header("Workspace and Directory Cleanup")
 workspace_input = st.text_area(
     "Workspaces to Clean (one per line)",
     height=200,
-    help="Enter workspace slugs to clean up, one per line"
+    help="Enter workspace slugs to clean up, one per line",
+    value="""customer_map
+ipn-tester
+phpunit-docker
+mercury
+gemini-demo
+gf-repeater
+Project-Falcon
+ops-scripts
+phpstormsettings
+phpstormstyles
+backlog
+zapier
+feedback
+gf-tests-command
+wordpress-docker
+gf-command-shell
+gf-repos-command
+mission-control
+stripeapp
+webops-backlog
+trial-template
+vendor-environments
+marketing-backlog"""
 )
 
 # Input for directories to clean
 directory_input = st.text_area(
     "Directories to Clean (one per line)", 
     height=200,
-    help="Enter directory names to clean up, one per line"
+    help="Enter directory names to clean up, one per line",
+    value="""gravityforms-customer_map-master-f5d9
+gravityforms-ipn-tester-master-b5cf
+gravityforms-phpunit-docker-master-2f91
+gravityforms-mercury-master-3311
+gravityforms-gemini-demo-master-db26
+gravityforms-gf-repeater-master-b3ae
+gravityforms-project-falcon-master-4c1e
+gravityforms-ops-scripts-master-d307
+gravityforms-phpstormsettings-master-655b
+gravityforms-phpstormstyles-master-500b
+gravityforms-backlog-master-de02
+gravityforms-zapier-master-556c
+gravityforms-feedback-master-552b
+gravityforms-gf-tests-command-master-2523
+gravityforms-wordpress-docker-master-9a87
+gravityforms-gf-command-shell-master-3c16
+gravityforms-gf-repos-command-master-278a
+gravityforms-mission-control-master-926b
+gravityforms-stripeapp-master-bf38
+gravityforms-webops-backlog-main-b03e
+gravityforms-trial-template-main-635f"""
 )
 
 # Display the confirmation phrase requirement
@@ -193,6 +237,19 @@ with st.expander("Help - Sample Data"):
     ops-scripts
     phpstormsettings
     phpstormstyles
+    backlog
+    zapier
+    feedback
+    gf-tests-command
+    wordpress-docker
+    gf-command-shell
+    gf-repos-command
+    mission-control
+    stripeapp
+    webops-backlog
+    trial-template
+    vendor-environments
+    marketing-backlog
     ```
     
     And a sample list of directories to clean:
@@ -207,6 +264,17 @@ with st.expander("Help - Sample Data"):
     gravityforms-ops-scripts-master-d307
     gravityforms-phpstormsettings-master-655b
     gravityforms-phpstormstyles-master-500b
+    gravityforms-backlog-master-de02
+    gravityforms-zapier-master-556c
+    gravityforms-feedback-master-552b
+    gravityforms-gf-tests-command-master-2523
+    gravityforms-wordpress-docker-master-9a87
+    gravityforms-gf-command-shell-master-3c16
+    gravityforms-gf-repos-command-master-278a
+    gravityforms-mission-control-master-926b
+    gravityforms-stripeapp-master-bf38
+    gravityforms-webops-backlog-main-b03e
+    gravityforms-trial-template-main-635f
     ```
     
     Remember to type `CONFIRM_WORKSPACE_DELETION` in the confirmation field to proceed with deletion.

@@ -128,7 +128,7 @@ app.post(
   }
 );
 
-app.post("/document-paths", [verifyRequest], async (request, response) => {
+app.post("/document-paths", [verifyPayloadIntegrity], async (request, response) => {
   try {
     const { folderName } = request.body;
     console.log(`[Document Paths]: Looking up paths for folder ${folderName}`);
