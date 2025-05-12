@@ -406,7 +406,15 @@ function extensionEndpoints(app) {
             if (validDestination && destinationFiles > 0) {
               try {
                 appendLog(`Adding ${validDestination}/*.json to workspace ${workspace.slug}`);
-                await Workspace.modifyEmbeddings(workspace.slug, {
+                
+                // Get workspace object
+                const workspaceObj = await Workspace.get({ slug: workspace.slug });
+                if (!workspaceObj) {
+                  throw new Error(`Workspace not found for slug: ${workspace.slug}`);
+                }
+                
+                // Use workspace object to modify embeddings
+                await workspaceObj.modifyEmbeddings({
                   adds: [`${validDestination}/*.json`],
                   deletes: []
                 });
@@ -734,7 +742,15 @@ function extensionEndpoints(app) {
               if (validDestination && destinationFiles > 0) {
                 try {
                   appendLog(`Adding ${validDestination}/*.json to workspace ${repoData.workspace.slug}`);
-                  await Workspace.modifyEmbeddings(repoData.workspace.slug, {
+                  
+                  // Get workspace object
+                  const workspaceObj = await Workspace.get({ slug: repoData.workspace.slug });
+                  if (!workspaceObj) {
+                    throw new Error(`Workspace not found for slug: ${repoData.workspace.slug}`);
+                  }
+                  
+                  // Use workspace object to modify embeddings
+                  await workspaceObj.modifyEmbeddings({
                     adds: [`${validDestination}/*.json`],
                     deletes: []
                   });
@@ -1298,7 +1314,13 @@ function extensionEndpoints(app) {
                 if (!dryRun) {
                   try {
                     // Add directory to workspace
-                    await Workspace.modifyEmbeddings(workspace.slug, {
+                    const workspaceObj = await Workspace.get({ slug: workspace.slug });
+                    if (!workspaceObj) {
+                      throw new Error(`Workspace not found for slug: ${workspace.slug}`);
+                    }
+                    
+                    // Method 1: Using workspace object
+                    await workspaceObj.modifyEmbeddings({
                       adds: [`${documentDir}/*.json`],
                       deletes: []
                     });

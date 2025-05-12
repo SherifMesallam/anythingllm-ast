@@ -546,77 +546,77 @@ If you've run a GitHub organization import that created workspaces but failed to
 the downloaded files and associating them with the workspaces.
 """)
 
-with st.expander("GitHub Organization Import Recovery", expanded=False):
-    col1, col2 = st.columns(2)
-    with col1:
-        github_org_filter = st.text_input("Organization filter (optional)", 
-                                         placeholder="e.g., gravityforms",
-                                         help="Filter workspaces by name containing this text")
-    
-    with col2:
-        gh_recovery_dry_run = st.checkbox("Dry run (test only, don't make changes)", value=True)
-    
-    if st.button("Recover GitHub Organization Import", type="primary"):
-        with st.spinner("Recovering GitHub organization import..."):
-            try:
-                payload = {
-                    "orgNameFilter": github_org_filter if github_org_filter else None,
-                    "dryRun": gh_recovery_dry_run
-                }
-                
-                response = make_request(
-                    f"/ext/github/org-import/recover",
-                    method="POST",
-                    json_data=payload
-                )
-                
-                if response and response.status_code == 200:
-                    try:
-                        recovery_response = response.json()
-                        if recovery_response.get("success"):
-                            results = recovery_response.get("results", {})
-                            st.success(f"Recovery process completed!")
+# Use columns instead of expander
+col1, col2 = st.columns(2)
+with col1:
+    github_org_filter = st.text_input("Organization filter (optional)", 
+                                     placeholder="e.g., gravityforms",
+                                     help="Filter workspaces by name containing this text")
+
+with col2:
+    gh_recovery_dry_run = st.checkbox("Dry run (test only, don't make changes)", value=True)
+
+if st.button("Recover GitHub Organization Import", type="primary"):
+    with st.spinner("Recovering GitHub organization import..."):
+        try:
+            payload = {
+                "orgNameFilter": github_org_filter if github_org_filter else None,
+                "dryRun": gh_recovery_dry_run
+            }
+            
+            response = make_request(
+                f"/ext/github/org-import/recover",
+                method="POST",
+                json_data=payload
+            )
+            
+            if response and response.status_code == 200:
+                try:
+                    recovery_response = response.json()
+                    if recovery_response.get("success"):
+                        results = recovery_response.get("results", {})
+                        st.success(f"Recovery process completed!")
+                        
+                        # Show summary
+                        st.write(f"Total workspaces to recover: {results.get('total', 0)}")
+                        st.write(f"Matching directories found: {results.get('found', 0)}")
+                        st.write(f"Workspaces fixed: {results.get('fixed', 0)}")
+                        st.write(f"Workspaces not found: {results.get('notFound', 0)}")
+                        st.write(f"Workspaces skipped (dry run): {results.get('skipped', 0)}")
+                        
+                        # Show log file path
+                        if "logFile" in recovery_response:
+                            st.info(f"Log file: {recovery_response['logFile']}")
+                        
+                        # Show detailed results
+                        if results.get("details"):
+                            st.subheader("Detailed Results")
                             
-                            # Show summary
-                            st.write(f"Total workspaces to recover: {results.get('total', 0)}")
-                            st.write(f"Matching directories found: {results.get('found', 0)}")
-                            st.write(f"Workspaces fixed: {results.get('fixed', 0)}")
-                            st.write(f"Workspaces not found: {results.get('notFound', 0)}")
-                            st.write(f"Workspaces skipped (dry run): {results.get('skipped', 0)}")
-                            
-                            # Show log file path
-                            if "logFile" in recovery_response:
-                                st.info(f"Log file: {recovery_response['logFile']}")
-                            
-                            # Show detailed results
-                            if results.get("details"):
-                                st.subheader("Detailed Results")
+                            # Create a DataFrame for the results
+                            df_data = []
+                            for item in results["details"]:
+                                df_data.append({
+                                    "Workspace": item["slug"],
+                                    "Found": "✅" if item["found"] else "❌",
+                                    "Fixed": "✅" if item["fixed"] else "❌" if not gh_recovery_dry_run else "⏩ (dry run)",
+                                    "Directory": item["directory"] or "Not found",
+                                    "Error": item["error"] or ""
+                                })
                                 
-                                # Create a DataFrame for the results
-                                df_data = []
-                                for item in results["details"]:
-                                    df_data.append({
-                                        "Workspace": item["slug"],
-                                        "Found": "✅" if item["found"] else "❌",
-                                        "Fixed": "✅" if item["fixed"] else "❌" if not gh_recovery_dry_run else "⏩ (dry run)",
-                                        "Directory": item["directory"] or "Not found",
-                                        "Error": item["error"] or ""
-                                    })
-                                    
-                                st.dataframe(pd.DataFrame(df_data))
-                    except Exception as e:
-                        st.error(f"Error parsing recovery response: {str(e)}")
-                else:
-                    st.error(f"Error: {response.status_code if response else 'No response'}")
-                    if response:
-                        try:
-                            error_info = response.json()
-                            st.error(f"Server error: {error_info.get('error', 'Unknown error')}")
-                        except:
-                            st.error(f"Failed to parse response: {response.text}")
-                    
-            except Exception as e:
-                st.error(f"Error during recovery: {str(e)}")
+                            st.dataframe(pd.DataFrame(df_data))
+                except Exception as e:
+                    st.error(f"Error parsing recovery response: {str(e)}")
+            else:
+                st.error(f"Error: {response.status_code if response else 'No response'}")
+                if response:
+                    try:
+                        error_info = response.json()
+                        st.error(f"Server error: {error_info.get('error', 'Unknown error')}")
+                    except:
+                        st.error(f"Failed to parse response: {response.text}")
+                
+        except Exception as e:
+            st.error(f"Error during recovery: {str(e)}")
 
 # Leave an empty line for spacing
 st.write("") 
