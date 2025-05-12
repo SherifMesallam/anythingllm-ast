@@ -407,17 +407,19 @@ function extensionEndpoints(app) {
               try {
                 appendLog(`Adding ${validDestination}/*.json to workspace ${workspace.slug}`);
                 
-                // Get workspace object
-                const workspaceObj = await Workspace.get({ slug: workspace.slug });
-                if (!workspaceObj) {
-                  throw new Error(`Workspace not found for slug: ${workspace.slug}`);
-                }
+                // Use Document.addDocuments instead of modifyEmbeddings
+                const { Document } = require("../../models/documents");
                 
-                // Use workspace object to modify embeddings
-                await workspaceObj.modifyEmbeddings({
-                  adds: [`${validDestination}/*.json`],
-                  deletes: []
-                });
+                // Add the directory's JSON files to the workspace
+                const result = await Document.addDocuments(
+                  workspace,
+                  [`${validDestination}/*.json`],
+                  null // No userId for system-level operations
+                );
+                
+                if (result.failedToEmbed && result.failedToEmbed.length > 0) {
+                  appendLog(`Warning: ${result.failedToEmbed.length} files failed to embed: ${result.errors.join(', ')}`);
+                }
                 
                 appendLog(`Successfully imported ${repoFullName} into workspace ${workspace.slug}`);
                 progress.repositories[repoFullName].status = "completed";
@@ -743,17 +745,19 @@ function extensionEndpoints(app) {
                 try {
                   appendLog(`Adding ${validDestination}/*.json to workspace ${repoData.workspace.slug}`);
                   
-                  // Get workspace object
-                  const workspaceObj = await Workspace.get({ slug: repoData.workspace.slug });
-                  if (!workspaceObj) {
-                    throw new Error(`Workspace not found for slug: ${repoData.workspace.slug}`);
-                  }
+                  // Use Document.addDocuments instead of modifyEmbeddings
+                  const { Document } = require("../../models/documents");
                   
-                  // Use workspace object to modify embeddings
-                  await workspaceObj.modifyEmbeddings({
-                    adds: [`${validDestination}/*.json`],
-                    deletes: []
-                  });
+                  // Add the directory's JSON files to the workspace
+                  const result = await Document.addDocuments(
+                    repoData.workspace,
+                    [`${validDestination}/*.json`],
+                    null // No userId for system-level operations
+                  );
+                  
+                  if (result.failedToEmbed && result.failedToEmbed.length > 0) {
+                    appendLog(`Warning: ${result.failedToEmbed.length} files failed to embed: ${result.errors.join(', ')}`);
+                  }
                   
                   appendLog(`Successfully imported ${repoFullName} into workspace ${repoData.workspace.slug}`);
                   repoData.status = "completed";
@@ -1313,21 +1317,25 @@ function extensionEndpoints(app) {
                 
                 if (!dryRun) {
                   try {
-                    // Add directory to workspace
-                    const workspaceObj = await Workspace.get({ slug: workspace.slug });
-                    if (!workspaceObj) {
-                      throw new Error(`Workspace not found for slug: ${workspace.slug}`);
+                    // Add directory to workspace using Document.addDocuments
+                    const { Document } = require("../../models/documents");
+                    
+                    // Add the directory's JSON files to the workspace
+                    const result = await Document.addDocuments(
+                      workspace,
+                      [`${documentDir}/*.json`],
+                      null // No userId for system-level operations
+                    );
+                    
+                    if (result.failedToEmbed && result.failedToEmbed.length > 0) {
+                      const errorMessage = `Successfully added some files, but ${result.failedToEmbed.length} files failed: ${result.errors.join(', ')}`;
+                      appendLog(errorMessage);
+                      workspaceResult.error = errorMessage;
+                    } else {
+                      appendLog(`Successfully added ${documentDir}/*.json to workspace ${workspace.slug}`);
+                      workspaceResult.fixed = true;
+                      results.fixed++;
                     }
-                    
-                    // Method 1: Using workspace object
-                    await workspaceObj.modifyEmbeddings({
-                      adds: [`${documentDir}/*.json`],
-                      deletes: []
-                    });
-                    
-                    appendLog(`Successfully added ${documentDir}/*.json to workspace ${workspace.slug}`);
-                    workspaceResult.fixed = true;
-                    results.fixed++;
                   } catch (error) {
                     appendLog(`Error adding directory to workspace: ${error.message}`);
                     workspaceResult.error = error.message;
