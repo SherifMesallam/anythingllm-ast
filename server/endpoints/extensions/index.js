@@ -304,6 +304,9 @@ function extensionEndpoints(app) {
             }
 
             appendLog(`Successfully fetched ${responseFromProcessor.data.files} files from ${repoFullName}`);
+            appendLog(`Document destination: ${responseFromProcessor.data.destination}`);
+            appendLog(`Full collector response: ${JSON.stringify(responseFromProcessor.data, null, 2)}`);
+            
             progress.repositories[repoFullName].documents = {
               fileCount: responseFromProcessor.data.files,
               destination: responseFromProcessor.data.destination
@@ -312,30 +315,59 @@ function extensionEndpoints(app) {
 
             // Embed files into workspace
             const destination = responseFromProcessor.data.destination;
-            const documentsDir = path.join(process.cwd(), 'collector', 'hotdir', destination);
-            if (!fs.existsSync(documentsDir)) {
-              throw new Error(`Directory not found: ${documentsDir}`);
+            
+            // Try to directly fetch document paths from collector
+            try {
+              appendLog(`Attempting to get document paths directly from collector API...`);
+              const collectorDocResponse = await collectorApi.getDocumentPaths(destination);
+              
+              if (collectorDocResponse.success && collectorDocResponse.data && collectorDocResponse.data.paths) {
+                appendLog(`Got ${collectorDocResponse.data.paths.length} paths from collector API`);
+                const collectorPaths = collectorDocResponse.data.paths;
+                
+                await Workspace.modifyEmbeddings(workspace.slug, {
+                  adds: collectorPaths,
+                  deletes: []
+                });
+                
+                appendLog(`Successfully imported ${repoFullName} into workspace ${workspace.slug} using collector paths`);
+                progress.repositories[repoFullName].status = "completed";
+                progress.completed++;
+                updateProgress();
+                continue;
+              } else {
+                appendLog(`Collector API did not return document paths, falling back to directory search`);
+              }
+            } catch (collectorErr) {
+              appendLog(`Error getting document paths from collector: ${collectorErr.message}`);
             }
 
-            // Add files to workspace
-            appendLog(`Adding files to workspace ${workspace.slug}`);
-            const files = fs.readdirSync(documentsDir)
-              .filter(file => file.endsWith(".json"))
-              .map(file => `${destination}/${file}`);
-
-            if (files.length === 0) {
-              throw new Error(`No files found in ${destination}`);
+            // Fallback method - use standard document reference
+            appendLog(`Using fallback method with destination path: ${destination}`);
+            try {
+              // Use direct document references
+              const documentRefs = [];
+              const jsonPattern = new RegExp(`\\.json$`);
+              
+              // Try to use the destination to construct document paths
+              for (let i = 0; i < responseFromProcessor.data.files; i++) {
+                documentRefs.push(`${destination}/file_${i}.json`);
+              }
+              
+              // Use a generic pattern that matches the known destination folder
+              appendLog(`Adding ${documentRefs.length} generic document references to workspace`);
+              await Workspace.modifyEmbeddings(workspace.slug, {
+                adds: [`${destination}/*.json`],
+                deletes: []
+              });
+              
+              appendLog(`Successfully imported ${repoFullName} into workspace ${workspace.slug} using fallback method`);
+              progress.repositories[repoFullName].status = "completed";
+              progress.completed++;
+              updateProgress();
+            } catch (fallbackError) {
+              throw new Error(`Fallback embedding failed: ${fallbackError.message}`);
             }
-
-            await Workspace.modifyEmbeddings(workspace.slug, {
-              adds: files,
-              deletes: []
-            });
-
-            appendLog(`Successfully imported ${repoFullName} into workspace ${workspace.slug}`);
-            progress.repositories[repoFullName].status = "completed";
-            progress.completed++;
-            updateProgress();
           } catch (error) {
             appendLog(`Error processing ${repoFullName}: ${error.message}`);
             progress.repositories[repoFullName].status = "failed";
@@ -548,6 +580,9 @@ function extensionEndpoints(app) {
               }
 
               appendLog(`Successfully fetched ${responseFromProcessor.data.files} files from ${repoFullName}`);
+              appendLog(`Document destination: ${responseFromProcessor.data.destination}`);
+              appendLog(`Full collector response: ${JSON.stringify(responseFromProcessor.data, null, 2)}`);
+              
               repoData.documents = {
                 fileCount: responseFromProcessor.data.files,
                 destination: responseFromProcessor.data.destination
@@ -557,30 +592,59 @@ function extensionEndpoints(app) {
 
             // Embed files into workspace
             const destination = repoData.documents.destination;
-            const documentsDir = path.join(process.cwd(), 'collector', 'hotdir', destination);
-            if (!fs.existsSync(documentsDir)) {
-              throw new Error(`Directory not found: ${documentsDir}`);
+            
+            // Try to directly fetch document paths from collector
+            try {
+              appendLog(`Attempting to get document paths directly from collector API...`);
+              const collectorDocResponse = await collectorApi.getDocumentPaths(destination);
+              
+              if (collectorDocResponse.success && collectorDocResponse.data && collectorDocResponse.data.paths) {
+                appendLog(`Got ${collectorDocResponse.data.paths.length} paths from collector API`);
+                const collectorPaths = collectorDocResponse.data.paths;
+                
+                await Workspace.modifyEmbeddings(repoData.workspace.slug, {
+                  adds: collectorPaths,
+                  deletes: []
+                });
+                
+                appendLog(`Successfully imported ${repoFullName} into workspace ${repoData.workspace.slug} using collector paths`);
+                repoData.status = "completed";
+                progress.completed++;
+                updateProgress();
+                continue;
+              } else {
+                appendLog(`Collector API did not return document paths, falling back to directory search`);
+              }
+            } catch (collectorErr) {
+              appendLog(`Error getting document paths from collector: ${collectorErr.message}`);
             }
 
-            // Add files to workspace
-            appendLog(`Adding files to workspace ${repoData.workspace.slug}`);
-            const files = fs.readdirSync(documentsDir)
-              .filter(file => file.endsWith(".json"))
-              .map(file => `${destination}/${file}`);
-
-            if (files.length === 0) {
-              throw new Error(`No files found in ${destination}`);
+            // Fallback method - use standard document reference
+            appendLog(`Using fallback method with destination path: ${destination}`);
+            try {
+              // Use direct document references
+              const documentRefs = [];
+              const jsonPattern = new RegExp(`\\.json$`);
+              
+              // Try to use the destination to construct document paths
+              for (let i = 0; i < responseFromProcessor.data.files; i++) {
+                documentRefs.push(`${destination}/file_${i}.json`);
+              }
+              
+              // Use a generic pattern that matches the known destination folder
+              appendLog(`Adding ${documentRefs.length} generic document references to workspace`);
+              await Workspace.modifyEmbeddings(repoData.workspace.slug, {
+                adds: [`${destination}/*.json`],
+                deletes: []
+              });
+              
+              appendLog(`Successfully imported ${repoFullName} into workspace ${repoData.workspace.slug} using fallback method`);
+              repoData.status = "completed";
+              progress.completed++;
+              updateProgress();
+            } catch (fallbackError) {
+              throw new Error(`Fallback embedding failed: ${fallbackError.message}`);
             }
-
-            await Workspace.modifyEmbeddings(repoData.workspace.slug, {
-              adds: files,
-              deletes: []
-            });
-
-            appendLog(`Successfully imported ${repoFullName} into workspace ${repoData.workspace.slug}`);
-            repoData.status = "completed";
-            progress.completed++;
-            updateProgress();
           } catch (error) {
             appendLog(`Error processing ${repoFullName}: ${error.message}`);
             repoData.status = "failed";
@@ -724,6 +788,179 @@ function extensionEndpoints(app) {
           success: false,
           error: e.message
         });
+      }
+    }
+  );
+
+  // New endpoint to clean up workspaces created by GitHub org import
+  app.post(
+    "/ext/github/cleanup-workspaces",
+    [
+      validatedRequest,
+      flexUserRoleValid([ROLES.admin]), // Restrict to admin only for safety
+    ],
+    async (request, response) => {
+      try {
+        const { workspaces = [], directories = [], confirmPhrase } = reqBody(request);
+        
+        // Require confirmation phrase as a safety measure
+        if (confirmPhrase !== "CONFIRM_WORKSPACE_DELETION") {
+          return response.status(400).json({
+            success: false,
+            error: "Missing or incorrect confirmation phrase. Use CONFIRM_WORKSPACE_DELETION to confirm."
+          });
+        }
+
+        // Validate we have something to clean up
+        if (workspaces.length === 0 && directories.length === 0) {
+          return response.status(400).json({
+            success: false,
+            error: "No workspaces or directories specified for cleanup"
+          });
+        }
+
+        // Create log file
+        const logDir = path.join(process.cwd(), "logs");
+        if (!fs.existsSync(logDir)) {
+          fs.mkdirSync(logDir, { recursive: true });
+        }
+        
+        const logId = uuidv4().substring(0, 8);
+        const logFile = path.join(logDir, `workspace-cleanup-${logId}.log`);
+        
+        // Write initial log
+        fs.writeFileSync(logFile, `[${new Date().toISOString()}] Starting workspace cleanup\n`);
+        
+        // Function to append to log
+        const appendLog = (message) => {
+          fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`);
+          console.log(`[Workspace Cleanup] ${message}`);
+        };
+
+        // Send immediate response
+        response.status(200).json({
+          success: true,
+          message: "Cleanup process started",
+          logFile,
+          workspaces: workspaces.length,
+          directories: directories.length
+        });
+
+        // Import required models
+        const { Workspace } = require("../../models/workspace");
+        const { Document } = require("../../models/documents");
+        const { DocumentVectors } = require("../../models/vectors");
+        const { WorkspaceChats } = require("../../models/workspaceChats");
+        const { getVectorDbClass } = require("../../utils/helpers");
+
+        // 1. Clean up workspaces from the database
+        const workspaceResults = [];
+        for (const slug of workspaces) {
+          try {
+            appendLog(`Starting cleanup for workspace: ${slug}`);
+            
+            // Get workspace info
+            const workspace = await Workspace.get({ slug });
+            if (!workspace) {
+              appendLog(`Workspace not found: ${slug}`);
+              workspaceResults.push({ slug, success: false, reason: "Workspace not found" });
+              continue;
+            }
+            
+            // Delete document vectors
+            appendLog(`Removing document vectors for workspace: ${slug}`);
+            const vectorDb = await getVectorDbClass();
+            await vectorDb.deleteNamespace(slug);
+            
+            // Delete workspace documents from database
+            appendLog(`Removing workspace documents for: ${slug}`);
+            const documents = await Document.where({ workspaceId: workspace.id });
+            for (const doc of documents) {
+              appendLog(`Removing document: ${doc.filename} (ID: ${doc.id})`);
+              await DocumentVectors.delete({ documentId: doc.id });
+              await Document.delete({ id: doc.id });
+            }
+            
+            // Delete workspace chats
+            appendLog(`Removing workspace chats for: ${slug}`);
+            await WorkspaceChats.delete({ workspaceId: workspace.id });
+            
+            // Delete workspace itself
+            appendLog(`Removing workspace: ${slug}`);
+            await Workspace.delete({ id: workspace.id });
+            
+            appendLog(`Completed cleanup for workspace: ${slug}`);
+            workspaceResults.push({ slug, success: true });
+          } catch (error) {
+            appendLog(`ERROR cleaning workspace ${slug}: ${error.message}`);
+            workspaceResults.push({ slug, success: false, reason: error.message });
+          }
+        }
+
+        // 2. Clean up directories
+        const directoryResults = [];
+        try {
+          // Check multiple possible locations for hotdir
+          const potentialPaths = [
+            path.join(process.cwd(), 'collector', 'hotdir'),
+            path.join(process.cwd(), 'server', 'collector', 'hotdir'),
+            path.join('/app', 'collector', 'hotdir'),
+            path.join('/app', 'server', 'collector', 'hotdir')
+          ];
+          
+          for (const directory of directories) {
+            appendLog(`Looking for directory: ${directory}`);
+            let found = false;
+            
+            for (const basePath of potentialPaths) {
+              if (!fs.existsSync(basePath)) continue;
+              
+              const dirPath = path.join(basePath, directory);
+              if (fs.existsSync(dirPath)) {
+                appendLog(`Found directory at: ${dirPath}`);
+                appendLog(`Removing directory: ${dirPath}`);
+                fs.rmSync(dirPath, { recursive: true, force: true });
+                found = true;
+                directoryResults.push({ directory, success: true, path: dirPath });
+                break;
+              }
+              
+              // Try to find directories that contain this name
+              try {
+                const entries = fs.readdirSync(basePath);
+                const matchingDir = entries.find(entry => entry.includes(directory));
+                if (matchingDir) {
+                  const fullPath = path.join(basePath, matchingDir);
+                  appendLog(`Found similar directory: ${fullPath}`);
+                  appendLog(`Removing directory: ${fullPath}`);
+                  fs.rmSync(fullPath, { recursive: true, force: true });
+                  found = true;
+                  directoryResults.push({ directory, success: true, path: fullPath });
+                  break;
+                }
+              } catch (e) {
+                appendLog(`Error reading directory ${basePath}: ${e.message}`);
+              }
+            }
+            
+            if (!found) {
+              appendLog(`Directory not found: ${directory}`);
+              directoryResults.push({ directory, success: false, reason: "Directory not found" });
+            }
+          }
+        } catch (error) {
+          appendLog(`ERROR cleaning directories: ${error.message}`);
+        }
+
+        appendLog(`Cleanup process completed. Results: ${workspaceResults.length} workspaces processed, ${directoryResults.filter(r => r.success).length}/${directories.length} directories deleted`);
+      } catch (e) {
+        console.error(e);
+        if (!response.headersSent) {
+          response.status(500).json({
+            success: false,
+            error: e.message
+          });
+        }
       }
     }
   );

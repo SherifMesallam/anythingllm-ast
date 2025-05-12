@@ -15,6 +15,8 @@ const { wipeCollectorStorage } = require("./utils/files");
 const extensions = require("./extensions");
 const { processRawText } = require("./processRawText");
 const { verifyPayloadIntegrity } = require("./middleware/verifyIntegrity");
+const fs = require("fs");
+
 const app = express();
 const FILE_LIMIT = "3GB";
 
@@ -125,6 +127,130 @@ app.post(
     return;
   }
 );
+
+app.post("/document-paths", [verifyRequest], async (request, response) => {
+  try {
+    const { folderName } = request.body;
+    console.log(`[Document Paths]: Looking up paths for folder ${folderName}`);
+    
+    if (!folderName) {
+      return response.status(400).json({
+        success: false,
+        reason: "Missing folderName parameter",
+      });
+    }
+    
+    // Search for the folder in the hotdir
+    const hotDirPath = path.join(__dirname, 'hotdir');
+    const folderPath = path.join(hotDirPath, folderName);
+    
+    if (fs.existsSync(folderPath)) {
+      console.log(`[Document Paths]: Found folder at ${folderPath}`);
+      const files = fs.readdirSync(folderPath)
+        .filter(file => file.endsWith('.json'))
+        .map(file => `${folderName}/${file}`);
+      
+      return response.status(200).json({
+        success: true,
+        data: {
+          paths: files,
+          folder: folderName,
+          count: files.length
+        }
+      });
+    }
+    
+    // If not found directly, search recursively
+    console.log(`[Document Paths]: Folder not found directly, searching recursively...`);
+    const findJsonFiles = (dir) => {
+      let results = [];
+      const list = fs.readdirSync(dir);
+      
+      for (const file of list) {
+        const filePath = path.join(dir, file);
+        const stat = fs.statSync(filePath);
+        
+        if (stat.isDirectory()) {
+          // If this is our target folder
+          if (file === folderName) {
+            console.log(`[Document Paths]: Found matching folder at ${filePath}`);
+            return fs.readdirSync(filePath)
+              .filter(f => f.endsWith('.json'))
+              .map(f => `${folderName}/${f}`);
+          }
+          // Otherwise check inside this directory
+          const subResults = findJsonFiles(filePath);
+          if (subResults.length > 0) return subResults;
+        }
+      }
+      
+      return results;
+    };
+    
+    const files = findJsonFiles(hotDirPath);
+    
+    if (files.length > 0) {
+      return response.status(200).json({
+        success: true,
+        data: {
+          paths: files,
+          folder: folderName,
+          count: files.length
+        }
+      });
+    }
+    
+    // Last attempt - try to find any JSON files in a folder containing the folderName
+    console.log(`[Document Paths]: Searching for folders containing ${folderName}...`);
+    const allJsonFiles = [];
+    
+    const findAllJsonFiles = (dir, baseDir = '') => {
+      const list = fs.readdirSync(dir);
+      
+      for (const file of list) {
+        const filePath = path.join(dir, file);
+        const relativePath = path.join(baseDir, file);
+        const stat = fs.statSync(filePath);
+        
+        if (stat.isDirectory()) {
+          if (file.includes(folderName)) {
+            console.log(`[Document Paths]: Found folder containing name: ${filePath}`);
+            const jsonFiles = fs.readdirSync(filePath)
+              .filter(f => f.endsWith('.json'))
+              .map(f => path.join(relativePath, f));
+            allJsonFiles.push(...jsonFiles);
+          }
+          findAllJsonFiles(filePath, relativePath);
+        }
+      }
+    };
+    
+    findAllJsonFiles(hotDirPath);
+    
+    if (allJsonFiles.length > 0) {
+      return response.status(200).json({
+        success: true,
+        data: {
+          paths: allJsonFiles,
+          folder: folderName,
+          count: allJsonFiles.length,
+          note: "Found files in folders containing the target name"
+        }
+      });
+    }
+    
+    return response.status(404).json({
+      success: false,
+      reason: `No document files found for folder ${folderName}`,
+    });
+  } catch (error) {
+    console.error(`[Document Paths]: Error processing request`, error);
+    return response.status(500).json({
+      success: false,
+      reason: error.message,
+    });
+  }
+});
 
 extensions(app);
 

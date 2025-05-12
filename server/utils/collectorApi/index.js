@@ -176,6 +176,37 @@ class CollectorApi {
         return { success: false, content: null };
       });
   }
+
+  /**
+   * Gets document paths for a specific folder from the collector
+   * @param {string} folderName - The name of the folder to get document paths for
+   * @returns {Promise<{success: boolean, data: {paths: string[], folder: string, count: number}|null, reason: string|null}>}
+   */
+  async getDocumentPaths(folderName = "") {
+    if (!folderName) return { success: false, data: null, reason: "No folder name provided" };
+
+    const data = JSON.stringify({ folderName });
+    return await fetch(`${this.endpoint}/document-paths`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Integrity": this.comkey.sign(data),
+        "X-Payload-Signer": this.comkey.encrypt(
+          new EncryptionManager().xPayload
+        ),
+      },
+      body: data,
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Response error: ${res.status} ${res.statusText}`);
+        return res.json();
+      })
+      .then((res) => res)
+      .catch((e) => {
+        this.log(e.message);
+        return { success: false, data: null, reason: e.message };
+      });
+  }
 }
 
 module.exports.CollectorApi = CollectorApi;
