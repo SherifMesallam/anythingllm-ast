@@ -13,6 +13,8 @@ const { Workspace } = require("../../models/workspace");
 const fs = require("fs");
 const path = require("path");
 const { v4: uuidv4 } = require("uuid");
+const express = require("express");
+const multer = require("multer");
 
 function extensionEndpoints(app) {
   if (!app) return;
@@ -304,69 +306,121 @@ function extensionEndpoints(app) {
             }
 
             appendLog(`Successfully fetched ${responseFromProcessor.data.files} files from ${repoFullName}`);
-            appendLog(`Document destination: ${responseFromProcessor.data.destination}`);
-            appendLog(`Full collector response: ${JSON.stringify(responseFromProcessor.data, null, 2)}`);
             
+            // Get the destination information from the collector response
+            const documentDestination = responseFromProcessor.data.destination;
+            appendLog(`Document destination reported by collector: ${documentDestination}`);
+            
+            // Check multiple possible locations for the destination
+            const potentialBasePaths = [
+              documentDestination, // Direct path from collector
+              path.join(process.cwd(), 'collector', 'hotdir'),
+              path.join(process.cwd(), 'server', 'collector', 'hotdir'),
+              path.join('/app', 'collector', 'hotdir'),
+              path.join('/app', 'server', 'collector', 'hotdir'),
+              path.join('/data', 'collector', 'hotdir'),
+              path.join('/opt/render', 'collector', 'hotdir'),
+              path.join('/opt/render/project', 'collector', 'hotdir'),
+              path.join('/storage', 'documents'),
+              path.join(process.cwd(), 'storage', 'documents'),
+              path.join('/app', 'storage', 'documents')
+            ];
+            
+            // Look for alternative paths for the destination directory
+            let validDestination = null;
+            let destinationFiles = 0;
+            
+            // First, check if the direct destination path exists
+            if (fs.existsSync(documentDestination)) {
+              validDestination = documentDestination;
+              try {
+                const files = fs.readdirSync(documentDestination).filter(f => f.endsWith('.json'));
+                destinationFiles = files.length;
+                appendLog(`Found ${destinationFiles} JSON files directly in ${validDestination}`);
+              } catch (err) {
+                appendLog(`Error reading direct destination directory: ${err.message}`);
+              }
+            } else {
+              appendLog(`Direct destination path does not exist: ${documentDestination}`);
+            }
+            
+            // If direct path didn't work, look for the document directory in other locations
+            if (!validDestination || destinationFiles === 0) {
+              // Generate possible directory name patterns
+              const repoName = repoFullName.replace('/', '-').toLowerCase();
+              const repoOwner = repoFullName.split('/')[0].toLowerCase();
+              const repoSlug = repoFullName.split('/')[1].toLowerCase();
+              
+              const possibleDirPatterns = [
+                repoName,  // gravityforms-simpleaddon
+                `${repoOwner}-${repoSlug}-master-`, // gravityforms-simpleaddon-master-
+                `${repoOwner}-${repoSlug}-main-`,   // gravityforms-simpleaddon-main-
+                repoSlug,  // simpleaddon
+                `${repoSlug}-master-` // simpleaddon-master-
+              ];
+              
+              // Check each base path for each pattern
+              outerLoop: for (const basePath of potentialBasePaths) {
+                if (!fs.existsSync(basePath)) continue;
+                
+                try {
+                  // Get all directories in this base path
+                  const dirs = fs.readdirSync(basePath);
+                  
+                  // Check each directory against our patterns
+                  for (const dir of dirs) {
+                    for (const pattern of possibleDirPatterns) {
+                      if (dir.includes(pattern)) {
+                        const candidatePath = path.join(basePath, dir);
+                        try {
+                          // Check if this directory has JSON files
+                          const files = fs.readdirSync(candidatePath).filter(f => f.endsWith('.json'));
+                          if (files.length > 0) {
+                            validDestination = candidatePath;
+                            destinationFiles = files.length;
+                            appendLog(`Found alternative directory with ${files.length} JSON files: ${validDestination}`);
+                            break outerLoop;
+                          }
+                        } catch (err) {
+                          appendLog(`Error checking directory ${candidatePath}: ${err.message}`);
+                        }
+                      }
+                    }
+                  }
+                } catch (error) {
+                  appendLog(`Error reading directory ${basePath}: ${error.message}`);
+                }
+              }
+            }
+            
+            // Store document destination in progress
             progress.repositories[repoFullName].documents = {
               fileCount: responseFromProcessor.data.files,
-              destination: responseFromProcessor.data.destination
+              reportedDestination: documentDestination,
+              actualDestination: validDestination,
+              destinationFiles: destinationFiles
             };
             updateProgress();
-
-            // Embed files into workspace
-            const destination = responseFromProcessor.data.destination;
             
-            // Try to directly fetch document paths from collector
-            try {
-              appendLog(`Attempting to get document paths directly from collector API...`);
-              const collectorDocResponse = await collectorApi.getDocumentPaths(destination);
-              
-              if (collectorDocResponse.success && collectorDocResponse.data && collectorDocResponse.data.paths) {
-                appendLog(`Got ${collectorDocResponse.data.paths.length} paths from collector API`);
-                const collectorPaths = collectorDocResponse.data.paths;
-                
+            // If we found a valid destination with files, embed it into the workspace
+            if (validDestination && destinationFiles > 0) {
+              try {
+                appendLog(`Adding ${validDestination}/*.json to workspace ${workspace.slug}`);
                 await Workspace.modifyEmbeddings(workspace.slug, {
-                  adds: collectorPaths,
+                  adds: [`${validDestination}/*.json`],
                   deletes: []
                 });
                 
-                appendLog(`Successfully imported ${repoFullName} into workspace ${workspace.slug} using collector paths`);
+                appendLog(`Successfully imported ${repoFullName} into workspace ${workspace.slug}`);
                 progress.repositories[repoFullName].status = "completed";
                 progress.completed++;
                 updateProgress();
-                continue;
-              } else {
-                appendLog(`Collector API did not return document paths, falling back to directory search`);
+              } catch (error) {
+                throw new Error(`Embedding failed: ${error.message}`);
               }
-            } catch (collectorErr) {
-              appendLog(`Error getting document paths from collector: ${collectorErr.message}`);
-            }
-
-            // Fallback method - use standard document reference
-            appendLog(`Using fallback method with destination path: ${destination}`);
-            try {
-              // Use direct document references
-              const documentRefs = [];
-              const jsonPattern = new RegExp(`\\.json$`);
-              
-              // Try to use the destination to construct document paths
-              for (let i = 0; i < responseFromProcessor.data.files; i++) {
-                documentRefs.push(`${destination}/file_${i}.json`);
-              }
-              
-              // Use a generic pattern that matches the known destination folder
-              appendLog(`Adding ${documentRefs.length} generic document references to workspace`);
-              await Workspace.modifyEmbeddings(workspace.slug, {
-                adds: [`${destination}/*.json`],
-                deletes: []
-              });
-              
-              appendLog(`Successfully imported ${repoFullName} into workspace ${workspace.slug} using fallback method`);
-              progress.repositories[repoFullName].status = "completed";
-              progress.completed++;
-              updateProgress();
-            } catch (fallbackError) {
-              throw new Error(`Fallback embedding failed: ${fallbackError.message}`);
+            } else {
+              // No valid destination found
+              throw new Error(`Directory not found: None of the potential locations contained the repository files`);
             }
           } catch (error) {
             appendLog(`Error processing ${repoFullName}: ${error.message}`);
@@ -580,70 +634,122 @@ function extensionEndpoints(app) {
               }
 
               appendLog(`Successfully fetched ${responseFromProcessor.data.files} files from ${repoFullName}`);
-              appendLog(`Document destination: ${responseFromProcessor.data.destination}`);
-              appendLog(`Full collector response: ${JSON.stringify(responseFromProcessor.data, null, 2)}`);
               
+              // Get the destination information from the collector response
+              const documentDestination = responseFromProcessor.data.destination;
+              appendLog(`Document destination reported by collector: ${documentDestination}`);
+              
+              // Check multiple possible locations for the destination
+              const potentialBasePaths = [
+                documentDestination, // Direct path from collector
+                path.join(process.cwd(), 'collector', 'hotdir'),
+                path.join(process.cwd(), 'server', 'collector', 'hotdir'),
+                path.join('/app', 'collector', 'hotdir'),
+                path.join('/app', 'server', 'collector', 'hotdir'),
+                path.join('/data', 'collector', 'hotdir'),
+                path.join('/opt/render', 'collector', 'hotdir'),
+                path.join('/opt/render/project', 'collector', 'hotdir'),
+                path.join('/storage', 'documents'),
+                path.join(process.cwd(), 'storage', 'documents'),
+                path.join('/app', 'storage', 'documents')
+              ];
+              
+              // Look for alternative paths for the destination directory
+              let validDestination = null;
+              let destinationFiles = 0;
+              
+              // First, check if the direct destination path exists
+              if (fs.existsSync(documentDestination)) {
+                validDestination = documentDestination;
+                try {
+                  const files = fs.readdirSync(documentDestination).filter(f => f.endsWith('.json'));
+                  destinationFiles = files.length;
+                  appendLog(`Found ${destinationFiles} JSON files directly in ${validDestination}`);
+                } catch (err) {
+                  appendLog(`Error reading direct destination directory: ${err.message}`);
+                }
+              } else {
+                appendLog(`Direct destination path does not exist: ${documentDestination}`);
+              }
+              
+              // If direct path didn't work, look for the document directory in other locations
+              if (!validDestination || destinationFiles === 0) {
+                // Generate possible directory name patterns
+                const repoName = repoFullName.replace('/', '-').toLowerCase();
+                const repoOwner = repoFullName.split('/')[0].toLowerCase();
+                const repoSlug = repoFullName.split('/')[1].toLowerCase();
+                
+                const possibleDirPatterns = [
+                  repoName,  // gravityforms-simpleaddon
+                  `${repoOwner}-${repoSlug}-master-`, // gravityforms-simpleaddon-master-
+                  `${repoOwner}-${repoSlug}-main-`,   // gravityforms-simpleaddon-main-
+                  repoSlug,  // simpleaddon
+                  `${repoSlug}-master-` // simpleaddon-master-
+                ];
+                
+                // Check each base path for each pattern
+                outerLoop: for (const basePath of potentialBasePaths) {
+                  if (!fs.existsSync(basePath)) continue;
+                  
+                  try {
+                    // Get all directories in this base path
+                    const dirs = fs.readdirSync(basePath);
+                    
+                    // Check each directory against our patterns
+                    for (const dir of dirs) {
+                      for (const pattern of possibleDirPatterns) {
+                        if (dir.includes(pattern)) {
+                          const candidatePath = path.join(basePath, dir);
+                          try {
+                            // Check if this directory has JSON files
+                            const files = fs.readdirSync(candidatePath).filter(f => f.endsWith('.json'));
+                            if (files.length > 0) {
+                              validDestination = candidatePath;
+                              destinationFiles = files.length;
+                              appendLog(`Found alternative directory with ${files.length} JSON files: ${validDestination}`);
+                              break outerLoop;
+                            }
+                          } catch (err) {
+                            appendLog(`Error checking directory ${candidatePath}: ${err.message}`);
+                          }
+                        }
+                      }
+                    }
+                  } catch (error) {
+                    appendLog(`Error reading directory ${basePath}: ${error.message}`);
+                  }
+                }
+              }
+              
+              // Store document destination in progress
               repoData.documents = {
                 fileCount: responseFromProcessor.data.files,
-                destination: responseFromProcessor.data.destination
+                reportedDestination: documentDestination,
+                actualDestination: validDestination,
+                destinationFiles: destinationFiles
               };
               updateProgress();
-            }
-
-            // Embed files into workspace
-            const destination = repoData.documents.destination;
-            
-            // Try to directly fetch document paths from collector
-            try {
-              appendLog(`Attempting to get document paths directly from collector API...`);
-              const collectorDocResponse = await collectorApi.getDocumentPaths(destination);
               
-              if (collectorDocResponse.success && collectorDocResponse.data && collectorDocResponse.data.paths) {
-                appendLog(`Got ${collectorDocResponse.data.paths.length} paths from collector API`);
-                const collectorPaths = collectorDocResponse.data.paths;
-                
-                await Workspace.modifyEmbeddings(repoData.workspace.slug, {
-                  adds: collectorPaths,
-                  deletes: []
-                });
-                
-                appendLog(`Successfully imported ${repoFullName} into workspace ${repoData.workspace.slug} using collector paths`);
-                repoData.status = "completed";
-                progress.completed++;
-                updateProgress();
-                continue;
+              // If we found a valid destination with files, embed it into the workspace
+              if (validDestination && destinationFiles > 0) {
+                try {
+                  appendLog(`Adding ${validDestination}/*.json to workspace ${repoData.workspace.slug}`);
+                  await Workspace.modifyEmbeddings(repoData.workspace.slug, {
+                    adds: [`${validDestination}/*.json`],
+                    deletes: []
+                  });
+                  
+                  appendLog(`Successfully imported ${repoFullName} into workspace ${repoData.workspace.slug}`);
+                  repoData.status = "completed";
+                  progress.completed++;
+                  updateProgress();
+                } catch (error) {
+                  throw new Error(`Embedding failed: ${error.message}`);
+                }
               } else {
-                appendLog(`Collector API did not return document paths, falling back to directory search`);
+                // No valid destination found
+                throw new Error(`Directory not found: None of the potential locations contained the repository files`);
               }
-            } catch (collectorErr) {
-              appendLog(`Error getting document paths from collector: ${collectorErr.message}`);
-            }
-
-            // Fallback method - use standard document reference
-            appendLog(`Using fallback method with destination path: ${destination}`);
-            try {
-              // Use direct document references
-              const documentRefs = [];
-              const jsonPattern = new RegExp(`\\.json$`);
-              
-              // Try to use the destination to construct document paths
-              for (let i = 0; i < responseFromProcessor.data.files; i++) {
-                documentRefs.push(`${destination}/file_${i}.json`);
-              }
-              
-              // Use a generic pattern that matches the known destination folder
-              appendLog(`Adding ${documentRefs.length} generic document references to workspace`);
-              await Workspace.modifyEmbeddings(repoData.workspace.slug, {
-                adds: [`${destination}/*.json`],
-                deletes: []
-              });
-              
-              appendLog(`Successfully imported ${repoFullName} into workspace ${repoData.workspace.slug} using fallback method`);
-              repoData.status = "completed";
-              progress.completed++;
-              updateProgress();
-            } catch (fallbackError) {
-              throw new Error(`Fallback embedding failed: ${fallbackError.message}`);
             }
           } catch (error) {
             appendLog(`Error processing ${repoFullName}: ${error.message}`);
@@ -1016,6 +1122,229 @@ function extensionEndpoints(app) {
             error: e.message
           });
         }
+      }
+    }
+  );
+
+  // New endpoint to recover GitHub org import workspaces
+  app.post(
+    "/ext/github/org-import/recover",
+    [
+      validatedRequest,
+      flexUserRoleValid([ROLES.admin, ROLES.manager]),
+    ],
+    async (request, response) => {
+      try {
+        const { accessToken, orgNameFilter, dryRun = true } = reqBody(request);
+        
+        // Create persistent log file
+        const logDir = path.join(process.cwd(), "logs");
+        if (!fs.existsSync(logDir)) {
+          fs.mkdirSync(logDir, { recursive: true });
+        }
+        
+        const logId = uuidv4().substring(0, 8);
+        const logFile = path.join(logDir, `github-org-import-recovery-${logId}.log`);
+        
+        // Write initial log
+        fs.writeFileSync(logFile, `[${new Date().toISOString()}] Starting GitHub org import recovery process\n`);
+        
+        // Function to append to log
+        const appendLog = (message) => {
+          fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`);
+          console.log(`[GitHub Org Import Recovery] ${message}`);
+        };
+
+        // Load required models
+        const { Workspace } = require("../../models/workspace");
+        const { Document } = require("../../models/documents");
+        
+        // Get all workspaces
+        appendLog(`Fetching all workspaces...`);
+        const allWorkspaces = await Workspace.where({});
+        appendLog(`Found ${allWorkspaces.length} total workspaces`);
+        
+        // Filter workspaces if orgNameFilter is provided
+        let workspacesToProcess = allWorkspaces;
+        if (orgNameFilter) {
+          workspacesToProcess = allWorkspaces.filter(workspace => 
+            workspace.slug.includes(orgNameFilter.toLowerCase())
+          );
+          appendLog(`Filtered to ${workspacesToProcess.length} workspaces matching ${orgNameFilter}`);
+        }
+        
+        // Check for workspaces with no documents
+        const workspacesWithNoDocuments = [];
+        for (const workspace of workspacesToProcess) {
+          const documents = await Document.where({ workspaceId: workspace.id });
+          if (!documents || documents.length === 0) {
+            workspacesWithNoDocuments.push(workspace);
+          }
+        }
+        
+        appendLog(`Found ${workspacesWithNoDocuments.length} workspaces with no documents`);
+        
+        // Prepare to store results
+        const results = {
+          total: workspacesWithNoDocuments.length,
+          found: 0,
+          notFound: 0,
+          fixed: 0,
+          skipped: 0,
+          details: []
+        };
+        
+        // Check multiple possible locations for hotdir
+        const potentialBasePaths = [
+          path.join(process.cwd(), 'collector', 'hotdir'),
+          path.join(process.cwd(), 'server', 'collector', 'hotdir'),
+          path.join('/app', 'collector', 'hotdir'),
+          path.join('/app', 'server', 'collector', 'hotdir'),
+          path.join('/data', 'collector', 'hotdir'),
+          path.join('/opt/render', 'collector', 'hotdir'),
+          path.join('/opt/render/project', 'collector', 'hotdir'),
+          path.join('/storage', 'documents'),
+          path.join(process.cwd(), 'storage', 'documents'),
+          path.join('/app', 'storage', 'documents')
+        ];
+        
+        // Find all existing base directories
+        const existingBasePaths = [];
+        for (const basePath of potentialBasePaths) {
+          if (fs.existsSync(basePath)) {
+            existingBasePaths.push(basePath);
+            appendLog(`Found base directory at: ${basePath}`);
+          }
+        }
+        
+        if (existingBasePaths.length === 0) {
+          appendLog(`Warning: No base directories found in any of the expected locations`);
+          return response.status(400).json({
+            success: false,
+            error: "No valid document directories found",
+            logFile
+          });
+        }
+        
+        // Process each workspace with no documents
+        for (const workspace of workspacesWithNoDocuments) {
+          appendLog(`Processing workspace: ${workspace.slug} (ID: ${workspace.id})`);
+          
+          // Generate potential directory names
+          const repoName = workspace.slug.replace(/-/g, '');
+          const possibleDirPatterns = [
+            // Exact match
+            workspace.slug,
+            // With master branch
+            `${workspace.slug}-master-`,
+            // With main branch
+            `${workspace.slug}-main-`,
+            // Organization prefix
+            `gravityforms-${workspace.slug}-master-`,
+            // Different delimiters
+            workspace.slug.replace(/-/g, '_'),
+            // Direct match without hyphens
+            repoName,
+            // Match variations with master
+            `${repoName}-master-`,
+            // Removing common prefixes if they exist
+            workspace.slug.replace(/^gravityforms-/, ''),
+            workspace.slug.replace(/^gravityforms/, '')
+          ];
+          
+          let documentDir = null;
+          let foundPattern = null;
+          // Look in each base path for each possible pattern
+          outerLoop: for (const basePath of existingBasePaths) {
+            try {
+              // Get all directories in this base path
+              const dirs = fs.readdirSync(basePath);
+              
+              // Check each directory against our patterns
+              for (const dir of dirs) {
+                for (const pattern of possibleDirPatterns) {
+                  if (dir.includes(pattern)) {
+                    documentDir = path.join(basePath, dir);
+                    foundPattern = pattern;
+                    break outerLoop;
+                  }
+                }
+              }
+            } catch (error) {
+              appendLog(`Error reading directory ${basePath}: ${error.message}`);
+            }
+          }
+          
+          const workspaceResult = {
+            slug: workspace.slug,
+            id: workspace.id,
+            found: !!documentDir,
+            directory: documentDir,
+            pattern: foundPattern,
+            fixed: false,
+            error: null
+          };
+          
+          if (documentDir) {
+            appendLog(`Found matching directory for ${workspace.slug}: ${documentDir} (matched pattern: ${foundPattern})`);
+            results.found++;
+            
+            // Check if it has JSON files
+            try {
+              const hasJsonFiles = fs.readdirSync(documentDir).some(file => file.endsWith('.json'));
+              if (hasJsonFiles) {
+                appendLog(`Directory has JSON files: ${documentDir}`);
+                
+                if (!dryRun) {
+                  try {
+                    // Add directory to workspace
+                    await Workspace.modifyEmbeddings(workspace.slug, {
+                      adds: [`${documentDir}/*.json`],
+                      deletes: []
+                    });
+                    
+                    appendLog(`Successfully added ${documentDir}/*.json to workspace ${workspace.slug}`);
+                    workspaceResult.fixed = true;
+                    results.fixed++;
+                  } catch (error) {
+                    appendLog(`Error adding directory to workspace: ${error.message}`);
+                    workspaceResult.error = error.message;
+                  }
+                } else {
+                  appendLog(`[DRY RUN] Would add ${documentDir}/*.json to workspace ${workspace.slug}`);
+                  results.skipped++;
+                }
+              } else {
+                appendLog(`Warning: No JSON files found in ${documentDir}`);
+                workspaceResult.error = "No JSON files found";
+              }
+            } catch (error) {
+              appendLog(`Error checking for JSON files in ${documentDir}: ${error.message}`);
+              workspaceResult.error = error.message;
+            }
+          } else {
+            appendLog(`No matching directory found for workspace: ${workspace.slug}`);
+            results.notFound++;
+          }
+          
+          results.details.push(workspaceResult);
+        }
+        
+        appendLog(`Recovery process completed: ${results.found} directories found, ${results.fixed} workspaces fixed, ${results.notFound} not found, ${results.skipped} skipped (dry run)`);
+        
+        response.status(200).json({
+          success: true,
+          results,
+          dryRun,
+          logFile
+        });
+        
+      } catch (e) {
+        console.error(e);
+        response.status(500).json({
+          success: false,
+          error: e.message
+        });
       }
     }
   );
